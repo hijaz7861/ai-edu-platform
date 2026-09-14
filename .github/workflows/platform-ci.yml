@@ -24,10 +24,16 @@ jobs:
           python-version: "3.13"
           cache: pip
 
+      - name: Install system OCR dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tesseract-ocr
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          tesseract --version
 
       - name: Syntax audit
         run: |
