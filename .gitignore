@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# Runtime
+*.pid
+*.log
+logs/
+*.sqlite
+*.sqlite3
+
+# Local database/runtime storage
+storage/
+tests/_tmp_images/
+
+# Self-healing runtime backups/reports
+.self-healing/
+*.bak
+
+# Local generated reports
+master_*.json
+master_*.txt
+production_master_*.json
+*_report.json
+*_report.txt
+
+# Local environment/secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Colab/Jupyter runtime
+.ipynb_checkpoints/

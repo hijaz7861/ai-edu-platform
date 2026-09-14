@@ -61,7 +61,7 @@ def health():
 @app.post("/institutions")
 def create_institution():
     conn = get_db()
-    body = request.get_json(force=True)
+    body = request.get_json(silent=True) or {}
     try:
         iid = core.create_institution(conn, body["name"], body["code"], body.get("type", "school"))
     except Exception as e:
@@ -72,7 +72,7 @@ def create_institution():
 @app.post("/institutions/<institution_id>/classes")
 def create_class(institution_id):
     conn = get_db()
-    body = request.get_json(force=True)
+    body = request.get_json(silent=True) or {}
     campus_id = body.get("campus_id") or core.create_campus(conn, institution_id, "Main Campus", f"{institution_id}-MAIN")
     cid = core.create_class(conn, institution_id, campus_id, body["name"], body.get("academic_year", "2026-2027"))
     return jsonify({"id": cid}), 201
@@ -90,7 +90,7 @@ def list_classes(institution_id):
 @app.post("/teachers/<teacher_id>/check-in")
 def teacher_check_in(teacher_id):
     conn = get_db()
-    body = request.get_json(force=True)
+    body = request.get_json(silent=True) or {}
     try:
         event_id, status = attendance.check_in(
             conn, teacher_id, body["institution_id"], body["policy_id"], body["time"], method=body.get("method", "manual")
@@ -103,7 +103,7 @@ def teacher_check_in(teacher_id):
 @app.post("/teachers/<teacher_id>/check-out")
 def teacher_check_out(teacher_id):
     conn = get_db()
-    body = request.get_json(force=True)
+    body = request.get_json(silent=True) or {}
     try:
         event_id, status = attendance.check_out(
             conn, teacher_id, body["institution_id"], body["policy_id"], body["time"], method=body.get("method", "manual")
@@ -150,10 +150,19 @@ def generate_exam(blueprint_id):
 @app.post("/approval-gates")
 def create_approval_gate():
     conn = get_db()
-    body = request.get_json(force=True)
+    body = request.get_json(silent=True) or {}
+    action_type = body.get("action_type")
+    explanation = body.get("explanation")
+
+    if not action_type:
+        return err("action_type is required")
+
+    if not explanation or not str(explanation).strip():
+        return err("explanation is required")
+
     try:
         gate_id = governance.request_approval(
-            conn, body["action_type"], body.get("payload", {}), body["explanation"],
+            conn, action_type, body.get("payload", {}), explanation,
             requested_by=body.get("requested_by"),
         )
     except ValueError as e:
@@ -164,7 +173,7 @@ def create_approval_gate():
 @app.post("/approval-gates/<gate_id>/decide")
 def decide_approval_gate(gate_id):
     conn = get_db()
-    body = request.get_json(force=True)
+    body = request.get_json(silent=True) or {}
     decision = governance.decide_approval(conn, gate_id, body["approver_id"], body["decision"])
     return jsonify({"gate_id": gate_id, "decision": decision})
 
