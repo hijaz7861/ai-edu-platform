@@ -7,11 +7,129 @@ Phases 3-4 (OCR/knowledge extraction) and 8 (notifications/voice) are demonstrat
 in their own test suites — this app exposes a representative slice of each, not
 every endpoint from the Phase 8/9 API design docs, to keep this file readable.
 """
-from flask import Flask, request, jsonify, g
+import hmac
+import os
+import secrets
+from dotenv import load_dotenv
+from flask import Flask, request, jsonify, g, abort, redirect, render_template, session, url_for
 from db import init_db, get_connection, DB_PATH
 from services import core, attendance, questions, exams, performance, governance
 
+load_dotenv()
+
 app = Flask(__name__)
+
+_secret = os.environ.get("SECRET_KEY")
+if not _secret:
+    _secret = secrets.token_hex(32)
+    app.logger.warning(
+        "SECRET_KEY unset; using a temporary development key."
+    )
+
+app.secret_key = _secret
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=os.environ.get("COOKIE_SECURE", "0") == "1",
+    MAX_CONTENT_LENGTH=int(
+        os.environ.get("MAX_CONTENT_LENGTH", str(25 * 1024 * 1024))
+    ),
+)
+
+
+def _csrf_token():
+    token = session.get("csrf_token")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["csrf_token"] = token
+    return token
+
+
+@app.context_processor
+def inject_csrf_token():
+    return {"csrf_token": _csrf_token}
+
+
+def _valid_csrf():
+    supplied = (
+        request.headers.get("X-CSRF-Token", "")
+        or request.form.get("csrf_token", "")
+    )
+    expected = session.get("csrf_token", "")
+    return bool(
+        supplied and expected and hmac.compare_digest(supplied, expected)
+    )
+
+
+_PROTECTED_API_PREFIXES = (
+    "/institutions",
+    "/teachers/",
+    "/question-banks/",
+    "/blueprints/",
+    "/approval-gates",
+    "/providers/",
+)
+
+
+@app.before_request
+def enforce_api_security():
+    # Enabled by default. Set REQUIRE_API_AUTH=0 only for isolated legacy demos.
+    if os.environ.get("REQUIRE_API_AUTH", "1") != "1":
+        return None
+
+    if not request.path.startswith(_PROTECTED_API_PREFIXES):
+        return None
+
+    if not session.get("user"):
+        return jsonify({"error": "authentication_required"}), 401
+
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        if not _valid_csrf():
+            return jsonify({"error": "csrf_invalid"}), 400
+
+    return None
+
+
+@app.route("/", methods=["GET"])
+def home():
+    if session.get("user"):
+        return render_template("dashboard.html", username=session["user"])
+    return render_template("login.html")
+
+
+@app.route("/auth/login", methods=["POST"])
+def login():
+    if not _valid_csrf():
+        abort(400, description="Invalid or missing CSRF token")
+
+    configured_user = os.environ.get("ADMIN_USERNAME")
+    configured_password = os.environ.get("ADMIN_PASSWORD")
+    if not configured_user or not configured_password:
+        return "Login is not configured on the server.", 503
+
+    username = request.form.get("username", "")
+    password = request.form.get("password", "")
+
+    if (
+        hmac.compare_digest(username, configured_user)
+        and hmac.compare_digest(password, configured_password)
+    ):
+        session.clear()
+        session["user"] = username
+        session["csrf_token"] = secrets.token_urlsafe(32)
+        return redirect(url_for("home"))
+
+    return "Invalid credentials. Please try again.", 401
+
+
+@app.route("/auth/logout", methods=["POST"])
+def logout():
+    if not _valid_csrf():
+        abort(400, description="Invalid or missing CSRF token")
+    session.clear()
+    return redirect(url_for("home"))
+
+
 
 # Flask's dev server handles requests on multiple threads, and a raw sqlite3
 # connection can't cross threads — real bug, caught by actually running this
@@ -54,6 +172,11 @@ def err(message, code=400):
 @app.get("/health")
 def health():
     return jsonify({"status": "ok"})
+
+
+@app.get("/api/status")
+def api_status():
+    return jsonify({"status": "ok", "api": "available"})
 
 
 # ---------- Phase 1 ----------

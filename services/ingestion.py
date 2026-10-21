@@ -5,8 +5,7 @@ no network needed) with actual image preprocessing and confidence-based flags.
 import re
 import json
 import hashlib
-import cv2
-import numpy as np
+from PIL import Image, ImageOps
 import pytesseract
 from services.core import new_id, now
 
@@ -39,36 +38,18 @@ def add_book_file(conn, book_id, file_type, storage_ref, original_filename, chec
     return fid
 
 
-def preprocess_image(image_path: str) -> np.ndarray:
-    """OCR-oriented preprocessing: upscale the page, normalize grayscale,
-    and apply Otsu thresholding for cleaner character separation."""
-    img = cv2.imread(image_path)
-    if img is None:
-        raise ValueError(f"Unable to read image: {image_path}")
+def preprocess_image(image_path):
+    """Prepare an image for OCR using grayscale conversion and upscaling."""
+    with Image.open(image_path) as original:
+        gray = ImageOps.grayscale(original)
+        return gray.resize(
+            (gray.width * 2, gray.height * 2),
+            Image.Resampling.LANCZOS,
+        )
 
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-    # Upscaling improves recognition of small scanned text.
-    gray = cv2.resize(
-        gray,
-        None,
-        fx=2.0,
-        fy=2.0,
-        interpolation=cv2.INTER_CUBIC,
-    )
-
-    # Mild denoising followed by automatic threshold selection.
-    gray = cv2.GaussianBlur(gray, (3, 3), 0)
-    _, thresh = cv2.threshold(
-        gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
-    )
-
-    return thresh
 
 
 CONFIDENCE_LOW_THRESHOLD = 60  # tesseract per-word confidence, 0-100
-
-
 def run_ocr(conn, book_page_id, image_path) -> dict:
     """Runs real Tesseract OCR, computes a genuine mean confidence score from
     per-word data, and sets quality flags from that real data — not asserted."""
@@ -93,8 +74,6 @@ def run_ocr(conn, book_page_id, image_path) -> dict:
         flags.append("low_confidence")
     if not raw_text.strip():
         flags.append("blank_page")
-    if re.search(r"[^\x00-\x7F]{0,0}", ""):  # placeholder no-op kept out; real corrupted-char check below
-        pass
     non_ascii_ratio = (
         sum(1 for ch in raw_text if ord(ch) > 0x2500) / max(len(raw_text), 1)
     )

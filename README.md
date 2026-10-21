@@ -13,6 +13,11 @@ pip install -r requirements.txt   # Flask, opencv-python, pytesseract, scikit-le
 python3 app.py                    # starts on http://localhost:8080
 ```
 
+
+### API security
+
+Business API routes require an authenticated session and CSRF protection by default (`REQUIRE_API_AUTH=1`). Configure `SECRET_KEY`, `ADMIN_USERNAME`, and `ADMIN_PASSWORD` before using the login UI. Browser-session JSON requests must send the session CSRF token in the `X-CSRF-Token` header. The unauthenticated curl example below works only when `REQUIRE_API_AUTH=0` is explicitly set for an isolated local demo; do not disable API authentication on a network-exposed server.
+
 Try it:
 ```bash
 curl -X POST http://localhost:8080/institutions \

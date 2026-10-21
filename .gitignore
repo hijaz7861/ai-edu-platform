@@ -46,3 +46,9 @@ Thumbs.db
 
 # Colab/Jupyter runtime
 .ipynb_checkpoints/
+# Local backups must remain local
+# Python test/runtime artifacts
+tests/__pycache__/
+
+# Keep local backups out of GitHub
+backups/
