@@ -22,6 +22,133 @@
       <div class="col-12 col-md-6 col-xl-4"><section class="card h-100 shadow-sm"><div class="card-body"><h2 class="h5">Governance and audit</h2><p class="text-secondary mb-0">Approval gates and audit-related backend workflows are available for further UI integration.</p></div></section></div>
       <div class="col-12 col-md-6 col-xl-4"><section class="card h-100 shadow-sm"><div class="card-body"><h2 class="h5">System status</h2><p class="mb-0"><a href="/health">Health check</a> · <a href="/api/status">API status</a></p></div></section></div>
     </div>
+
+    <section class="card shadow-sm mt-4" aria-labelledby="ai-question-title">
+      <div class="card-body">
+        <h2 id="ai-question-title" class="h4">AI Question Generator</h2>
+        <p class="text-secondary">
+          Generate a draft question with the configured AI provider.
+          Generated content is unverified and should be reviewed before use.
+        </p>
+
+        <form id="question-form">
+          <input type="hidden" id="csrf-token" value="{{ csrf_token() }}">
+          <div class="row g-3">
+            <div class="col-12 col-md-6">
+              <label for="concept" class="form-label">Topic or concept</label>
+              <input id="concept" name="concept" class="form-control"
+                     maxlength="200" required
+                     placeholder="e.g. Photosynthesis">
+            </div>
+            <div class="col-12 col-md-3">
+              <label for="question-type" class="form-label">Question type</label>
+              <select id="question-type" class="form-select">
+                <option value="definition">Definition</option>
+                <option value="mcq">Multiple choice (MCQ)</option>
+                <option value="short_answer" selected>Short answer</option>
+                <option value="long_answer">Long answer</option>
+              </select>
+            </div>
+            <div class="col-12 col-md-3">
+              <label for="difficulty" class="form-label">Difficulty</label>
+              <select id="difficulty" class="form-select">
+                <option value="easy">Easy</option>
+                <option value="medium" selected>Medium</option>
+                <option value="hard">Hard</option>
+              </select>
+            </div>
+            <div class="col-12">
+              <button id="generate-button" class="btn btn-primary" type="submit">
+                Generate question
+              </button>
+            </div>
+          </div>
+        </form>
+
+        <div id="question-status" class="mt-3" role="status" aria-live="polite"></div>
+        <section id="question-result" class="mt-3 d-none" aria-label="Generated question">
+          <h3 class="h5">Generated draft</h3>
+          <p id="result-content" class="fw-semibold"></p>
+          <div id="result-choices" class="mb-2"></div>
+          <p><strong>Answer:</strong> <span id="result-answer"></span></p>
+          <p><strong>Explanation:</strong> <span id="result-explanation"></span></p>
+          <p class="small text-secondary mb-0">
+            Status: <span id="result-verification"></span>
+          </p>
+        </section>
+      </div>
+    </section>
+
+    <script>
+    (() => {
+      const form = document.getElementById("question-form");
+      const button = document.getElementById("generate-button");
+      const status = document.getElementById("question-status");
+      const result = document.getElementById("question-result");
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        result.classList.add("d-none");
+        status.textContent = "Generating question…";
+        button.disabled = true;
+
+        try {
+          const response = await fetch("/api/questions/generate", {
+            method: "POST",
+            credentials: "same-origin",
+            headers: {
+              "Content-Type": "application/json",
+              "X-CSRF-Token": document.getElementById("csrf-token").value
+            },
+            body: JSON.stringify({
+              concept: document.getElementById("concept").value.trim(),
+              question_type: document.getElementById("question-type").value,
+              difficulty: document.getElementById("difficulty").value
+            })
+          });
+
+          const data = await response.json();
+          if (!response.ok) {
+            throw new Error(data.error || "Question generation failed.");
+          }
+
+          const question = data.question || {};
+          document.getElementById("result-content").textContent =
+            question.content || "No question content returned.";
+
+          const choices = document.getElementById("result-choices");
+          choices.replaceChildren();
+          if (Array.isArray(question.choices) && question.choices.length) {
+            const heading = document.createElement("p");
+            heading.textContent = "Options:";
+            choices.appendChild(heading);
+            const list = document.createElement("ol");
+            question.choices.forEach((choice) => {
+              const item = document.createElement("li");
+              item.textContent = String(choice);
+              list.appendChild(item);
+            });
+            choices.appendChild(list);
+          }
+
+          document.getElementById("result-answer").textContent =
+            question.answer == null ? "Not provided" : String(question.answer);
+          document.getElementById("result-explanation").textContent =
+            question.explanation == null ? "Not provided" : String(question.explanation);
+          document.getElementById("result-verification").textContent =
+            question.verification_status || "unverified";
+
+          result.classList.remove("d-none");
+          status.textContent = "Draft generated. Review its accuracy before using it.";
+        } catch (error) {
+          status.textContent = error.message || "Unable to generate a question.";
+        } finally {
+          button.disabled = false;
+        }
+      });
+    })();
+    </script>
+
   </main>
 </body>
 </html>

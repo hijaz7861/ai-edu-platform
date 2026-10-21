@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 from flask import Flask, request, jsonify, g, abort, redirect, render_template, session, url_for
 from db import init_db, get_connection, DB_PATH
 from services import core, attendance, questions, exams, performance, governance
+from providers.base import get_default_registry
 
 load_dotenv()
 
@@ -62,6 +63,7 @@ def _valid_csrf():
 
 
 _PROTECTED_API_PREFIXES = (
+    "/api/questions/",
     "/institutions",
     "/teachers/",
     "/question-banks/",
@@ -234,6 +236,38 @@ def teacher_check_out(teacher_id):
     except Exception as e:
         return err(str(e))
     return jsonify({"event_id": event_id, "status": status})
+
+
+# ---------- AI question generation ----------
+
+@app.post("/api/questions/generate")
+def generate_question():
+    body = request.get_json(silent=True) or {}
+    concept = body.get("concept")
+    question_type = body.get("question_type", "short_answer")
+    difficulty = body.get("difficulty", "medium")
+
+    if isinstance(concept, str):
+        concept = {"name": concept.strip()}
+
+    if not isinstance(concept, dict) or not str(concept.get("name", "")).strip():
+        return err("concept with a non-empty name is required", 400)
+    if question_type not in {"mcq", "definition", "short_answer", "long_answer"}:
+        return err("unsupported question_type", 400)
+    if difficulty not in {"easy", "medium", "hard"}:
+        return err("unsupported difficulty", 400)
+
+    provider = get_default_registry().get("openai-compatible")
+    if provider is None:
+        return err("AI provider is not configured", 503)
+
+    try:
+        result = provider.generate_question(concept, question_type, difficulty)
+    except RuntimeError:
+        app.logger.warning("AI question generation failed; provider error details withheld.")
+        return err("AI generation failed; check model availability, API quota, and configuration", 502)
+
+    return jsonify({"question": result, "provider": provider.name}), 200
 
 
 # ---------- Phase 5 ----------

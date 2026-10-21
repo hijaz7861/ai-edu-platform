@@ -77,7 +77,21 @@ class StubProvider(AIProvider):
 
 
 def get_default_registry():
-    return {"stub-offline-v1": StubProvider()}
+    """Return the offline provider and configured online provider."""
+    registry = {"stub-offline-v1": StubProvider()}
+    api_key = os.environ.get("AI_API_KEY", "").strip()
+    base_url = os.environ.get("AI_BASE_URL", "").strip()
+    model = os.environ.get("AI_MODEL", "").strip()
+
+    if api_key and base_url and model:
+        provider = OpenAICompatibleProvider(
+            api_key=api_key,
+            base_url=base_url,
+            model=model,
+        )
+        registry[provider.name] = provider
+
+    return registry
 
 
 class OpenAICompatibleProvider(AIProvider):
@@ -138,9 +152,33 @@ class OpenAICompatibleProvider(AIProvider):
         return result
 
     def generate_question(self, concept, question_type, difficulty):
-        result = self._complete_json(
+        type_instructions = {
+            "definition": (
+                "Create a definition question. The content must ask the learner to define "
+                "the supplied concept. Do not turn it into a multiple-choice question."
+            ),
+            "mcq": (
+                "Create exactly one multiple-choice question. Return exactly four choices "
+                "and an answer that exactly matches one of the choices."
+            ),
+            "short_answer": (
+                "Create one short-answer question that can be answered in a few sentences."
+            ),
+            "long_answer": (
+                "Create one open-ended long-answer question requiring a detailed explanation."
+            ),
+        }
+        instruction = (
             "Create one age-appropriate educational question. Do not invent source citations. "
-            "Return keys content, difficulty, and optional answer, explanation, and choices.",
+            + type_instructions.get(
+                question_type,
+                "Create one educational question of the requested type.",
+            )
+            + " Return a JSON object with content, difficulty, answer, explanation, and "
+            "choices when applicable. Keep the requested question type."
+        )
+        result = self._complete_json(
+            instruction,
             {"concept": concept, "question_type": question_type, "difficulty": difficulty},
         )
         content = result.get("content")
