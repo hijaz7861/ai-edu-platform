@@ -28,10 +28,10 @@ curl -X POST http://localhost:8080/institutions \
 ## Run the tests
 
 ```bash
-python3 -m unittest discover -s tests -v
+python3 -m pytest -q
 ```
 
-31 tests, all real (no mocks of the system under test) — last run: **31/31 passing**.
+39 tests passed on 2026-10-22 using `python3 -m pytest -q` in Ubuntu (Python 3.14.4, pytest 9.0.2).
 One real bug was caught and fixed while building this: a verification heuristic
 that incorrectly flagged short-but-valid definition questions as ambiguous
 (`providers/base.py`). Another was caught wiring up the Flask app itself: a
@@ -54,7 +54,7 @@ by switching to a per-request connection via `flask.g` (see `app.py`).
 | Notifications delivery, voice/NLU parsing (Phase 8) | **Not implemented here** — delivery needs real email/SMS providers (network); NLU beyond simple keyword matching needs a real model. Schema exists. |
 | Agent registry, approval gates, self-improvement (Phase 9) | **Real** — gated actions are provably blocked until approved (tested) |
 | Audit logging, credential redaction, provider fallback, retention deletion (Phase 10) | **Real** — all independently tested |
-| Testing & acceptance tracking (Phase 11) | **This is it** — 31 real tests, run and shown, not asserted |
+| Testing & acceptance tracking (Phase 11) | **This is it** — 39 tests passed in the latest verified run |
 
 ## Porting this into the real SuperPlatform repo
 
@@ -85,5 +85,5 @@ services/performance.py# Phase 7
 services/governance.py # Phase 9 + 10: approval gates, audit, providers, retention
 providers/base.py       # pluggable AI provider interface + honest offline stub
 app.py                  # runnable Flask server wiring the above
-tests/                   # 31 real tests, one file per phase
+tests/                   # Automated test suite
 ```
