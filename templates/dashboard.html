@@ -1,154 +1,388 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AI Education Platform — Dashboard</title>
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI-Edu Platform — Admin Dashboard</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+<style>
+:root{--navy:#111c35;--blue:#4968ed;--bg:#f4f6fb;--muted:#758099}
+body{background:var(--bg);color:#202b42;font-family:system-ui,-apple-system,sans-serif}
+.sidebar{background:var(--navy);color:#fff;min-height:100vh}
+.brand{font-weight:800;letter-spacing:.2px}
+.nav-link{color:#c5cee2;border-radius:10px;padding:.7rem .85rem}
+.nav-link:hover,.nav-link.active{background:#263653;color:white}
+.main{min-width:0}
+.panel,.stat-card{background:white;border:1px solid #e8ecf4;border-radius:16px;box-shadow:0 5px 24px #25365b08}
+.stat-card{padding:20px;height:100%;position:relative;overflow:hidden}
+.stat-label{font-size:.83rem;color:var(--muted)}
+.stat-number{font-size:2rem;font-weight:800;letter-spacing:-1px}
+.stat-icon{width:43px;height:43px;border-radius:12px;display:grid;place-items:center;background:#edf1ff;color:var(--blue);font-size:1.25rem}
+.section-title{font-weight:750;letter-spacing:-.3px}
+.table>:not(caption)>*>*{padding:.85rem .8rem;vertical-align:middle}
+.table thead th{font-size:.75rem;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);font-weight:700;border-bottom-color:#e8ecf4}
+.badge-soft{background:#eef2ff;color:#435ad2}
+.muted{color:var(--muted)}
+.btn-primary{background:var(--blue);border-color:var(--blue)}
+.form-control,.form-select{border-color:#e0e5ef;padding:.7rem .8rem}
+.form-control:focus,.form-select:focus{border-color:#8295ff;box-shadow:0 0 0 .2rem #4968ed1a}
+#question-result{border:1px solid #e2e8f5;background:#fbfcff;border-radius:12px;padding:18px}
+@media(max-width:767px){.sidebar{min-height:auto}.stat-number{font-size:1.65rem}.table>:not(caption)>*>*{padding:.65rem}}
+</style>
 </head>
-<body class="bg-light">
-  <nav class="navbar navbar-dark bg-dark"><div class="container-fluid">
-    <a class="navbar-brand" href="/">AI-Edu Platform</a>
-    <div class="d-flex align-items-center gap-3 text-white"><span>Signed in as {{ username|e }}</span>
-      <form method="post" action="/auth/logout" class="m-0"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-outline-light btn-sm" type="submit">Sign out</button></form>
-    </div>
-  </div></nav>
-  <main class="container py-4 py-md-5">
-    <div class="mb-4"><h1 class="h3">Platform overview</h1><p class="text-secondary mb-0">Current reference modules; cards do not imply that every production workflow is integrated.</p></div>
+<body>
+<div class="container-fluid">
+<div class="row">
+<aside class="col-12 col-md-3 col-xl-2 sidebar p-3 p-lg-4">
+  <a class="navbar-brand brand text-white text-decoration-none d-block mb-4" href="/">✦ AI-Edu <span class="text-info">Platform</span></a>
+  <div class="small text-uppercase mb-2" style="color:#8494b5;letter-spacing:1px">Workspace</div>
+  <nav class="nav flex-md-column flex-row flex-wrap gap-1">
+    <a class="nav-link active" href="#overview">▦ &nbsp; Overview</a>
+    <a class="nav-link" href="#institutions">▤ &nbsp; Institutions</a>
+    <a class="nav-link" href="#classes">▧ &nbsp; Classes</a>
+    <a class="nav-link" href="#question-banks">☷ &nbsp; Question banks</a>
+    <a class="nav-link" href="#exams">✎ &nbsp; Exams</a>
+    <a class="nav-link" href="#approvals">✓ &nbsp; Approvals</a>
+    <a class="nav-link" href="#ai-generator">✦ &nbsp; AI generator</a>
+  </nav>
+  <div class="d-none d-md-block mt-5 small" style="color:#9ba9c2">
+    <div class="mb-2">SYSTEM STATUS</div>
+    <span class="text-success">●</span> <span id="sidebar-status">Checking services…</span>
+    <hr style="border-color:#34415c">
+    <a href="/health" class="text-white-50">Health check</a>
+    <span class="mx-1">·</span><a href="/api/status" class="text-white-50">API status</a>
+  </div>
+</aside>
+
+<main class="col-12 col-md-9 col-xl-10 main p-3 p-lg-4 p-xl-5">
+<header id="overview" class="d-flex flex-wrap align-items-center justify-content-between gap-3 mb-4">
+  <div>
+    <div class="small muted mb-1">ADMINISTRATION / OVERVIEW</div>
+    <h1 class="h3 section-title mb-1">Platform dashboard</h1>
+    <p class="muted mb-0">Your education platform at a glance.</p>
+  </div>
+  <div class="d-flex align-items-center gap-3">
+    <span class="small muted">Signed in as <strong>{{ username|e }}</strong></span>
+    <form method="post" action="/auth/logout" class="m-0">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button class="btn btn-outline-secondary btn-sm" type="submit">Sign out</button>
+    </form>
+  </div>
+</header>
+
+<div id="global-status" class="alert d-none" role="status" aria-live="polite"></div>
+
+<section class="row g-3 mb-4" aria-label="Platform statistics">
+  <div class="col-6 col-xl-3"><div class="stat-card"><div class="d-flex justify-content-between align-items-start"><span class="stat-label">Institutions</span><span class="stat-icon">▤</span></div><div class="stat-number" id="stat-institutions">—</div><div class="small muted">Registered institutions</div></div></div>
+  <div class="col-6 col-xl-3"><div class="stat-card"><div class="d-flex justify-content-between align-items-start"><span class="stat-label">Students</span><span class="stat-icon">♙</span></div><div class="stat-number" id="stat-students">—</div><div class="small muted">Student records</div></div></div>
+  <div class="col-6 col-xl-3"><div class="stat-card"><div class="d-flex justify-content-between align-items-start"><span class="stat-label">Questions</span><span class="stat-icon">☷</span></div><div class="stat-number" id="stat-questions">—</div><div class="small muted">Stored questions</div></div></div>
+  <div class="col-6 col-xl-3"><div class="stat-card"><div class="d-flex justify-content-between align-items-start"><span class="stat-label">Pending approvals</span><span class="stat-icon">✓</span></div><div class="stat-number" id="stat-pending">—</div><div class="small muted">Awaiting review</div></div></div>
+</section>
+
+<section class="panel p-3 p-lg-4 mb-4" id="ai-generator">
+  <div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
+    <div><div class="small text-primary fw-bold mb-1">AI-POWERED LEARNING</div><h2 class="h5 section-title mb-1">Question generator</h2><p class="small muted mb-0">Create a draft and review it before use.</p></div>
+    <span class="badge badge-soft">AI draft · Requires review</span>
+  </div>
+  <form id="question-form">
+    <input type="hidden" id="csrf-token" value="{{ csrf_token() }}">
     <div class="row g-3">
-      <div class="col-12 col-md-6 col-xl-4"><section class="card h-100 shadow-sm"><div class="card-body"><h2 class="h5">Students and institutions</h2><p class="text-secondary mb-0">Core tenancy, user, role and attendance services are available in the backend; complete management screens remain a development task.</p></div></section></div>
-      <div class="col-12 col-md-6 col-xl-4"><section class="card h-100 shadow-sm"><div class="card-body"><h2 class="h5">Document ingestion and OCR</h2><p class="text-secondary mb-0">The ingestion service supports image OCR through Tesseract when the runtime dependencies are installed.</p></div></section></div>
-      <div class="col-12 col-md-6 col-xl-4"><section class="card h-100 shadow-sm"><div class="card-body"><h2 class="h5">Question bank</h2><p class="text-secondary mb-0">Question storage and TF-IDF duplicate detection are implemented; generation through a real LLM requires provider configuration.</p></div></section></div>
-      <div class="col-12 col-md-6 col-xl-4"><section class="card h-100 shadow-sm"><div class="card-body"><h2 class="h5">Exams and performance</h2><p class="text-secondary mb-0">Backend services cover exam assembly and topic-performance calculations.</p></div></section></div>
-      <div class="col-12 col-md-6 col-xl-4"><section class="card h-100 shadow-sm"><div class="card-body"><h2 class="h5">Governance and audit</h2><p class="text-secondary mb-0">Approval gates and audit-related backend workflows are available for further UI integration.</p></div></section></div>
-      <div class="col-12 col-md-6 col-xl-4"><section class="card h-100 shadow-sm"><div class="card-body"><h2 class="h5">System status</h2><p class="mb-0"><a href="/health">Health check</a> · <a href="/api/status">API status</a></p></div></section></div>
+      <div class="col-12 col-lg-6"><label for="concept" class="form-label">Topic or concept</label><input id="concept" class="form-control" maxlength="200" required placeholder="e.g. Photosynthesis"></div>
+      <div class="col-6 col-lg-2"><label for="question-type" class="form-label">Question type</label><select id="question-type" class="form-select"><option value="definition">Definition</option><option value="mcq">MCQ</option><option value="short_answer" selected>Short answer</option><option value="long_answer">Long answer</option></select></div>
+      <div class="col-6 col-lg-2"><label for="difficulty" class="form-label">Difficulty</label><select id="difficulty" class="form-select"><option value="easy">Easy</option><option value="medium" selected>Medium</option><option value="hard">Hard</option></select></div>
+      <div class="col-12 col-lg-2 d-flex align-items-end"><button id="generate-button" class="btn btn-primary w-100" type="submit">✦ Generate</button></div>
     </div>
+  </form>
+  <div id="question-status" class="mt-3 small" role="status" aria-live="polite"></div>
+  <section id="question-result" class="mt-3 d-none" aria-label="Generated question">
+    <div class="small text-primary fw-bold mb-2">GENERATED DRAFT</div>
+    <p id="result-content" class="fw-semibold mb-3"></p>
+    <div id="result-choices" class="mb-3"></div>
+    <p class="mb-2"><strong>Answer:</strong> <span id="result-answer"></span></p>
+    <p class="mb-2"><strong>Explanation:</strong> <span id="result-explanation"></span></p>
+    <p class="small muted mb-0">Verification: <span id="result-verification"></span></p>
+  </section>
+</section>
 
-    <section class="card shadow-sm mt-4" aria-labelledby="ai-question-title">
-      <div class="card-body">
-        <h2 id="ai-question-title" class="h4">AI Question Generator</h2>
-        <p class="text-secondary">
-          Generate a draft question with the configured AI provider.
-          Generated content is unverified and should be reviewed before use.
-        </p>
+<div class="row g-4">
+  <div class="col-12 col-xl-6" id="institutions"><section class="panel p-3 p-lg-4 h-100"><div class="d-flex justify-content-between align-items-center mb-3"><h2 class="h6 section-title mb-0">Institutions</h2><button class="btn btn-sm btn-outline-secondary" data-refresh="institutions">Refresh</button></div><div class="table-responsive"><table class="table mb-0"><thead><tr><th>Name</th><th>Code</th><th>Status</th></tr></thead><tbody id="institutions-body"><tr><td colspan="3" class="muted">Loading…</td></tr></tbody></table></div></section></div>
+  <div class="col-12 col-xl-6" id="classes"><section class="panel p-3 p-lg-4 h-100"><div class="d-flex justify-content-between align-items-center mb-3"><h2 class="h6 section-title mb-0">Classes</h2><button class="btn btn-sm btn-outline-secondary" data-refresh="classes">Refresh</button></div><div class="table-responsive"><table class="table mb-0"><thead><tr><th>Class</th><th>Academic year</th><th>Status</th></tr></thead><tbody id="classes-body"><tr><td colspan="3" class="muted">Loading…</td></tr></tbody></table></div></section></div>
+  <div class="col-12 col-xl-6" id="question-banks"><section class="panel p-3 p-lg-4 h-100"><div class="d-flex justify-content-between align-items-center mb-3"><h2 class="h6 section-title mb-0">Question banks</h2><button class="btn btn-sm btn-outline-secondary" data-refresh="question-banks">Refresh</button></div><div class="table-responsive"><table class="table mb-0"><thead><tr><th>Name</th><th>Status</th></tr></thead><tbody id="question-banks-body"><tr><td colspan="2" class="muted">Loading…</td></tr></tbody></table></div></section></div>
+  <div class="col-12 col-xl-6" id="exams"><section class="panel p-3 p-lg-4 h-100"><div class="d-flex justify-content-between align-items-center mb-3"><h2 class="h6 section-title mb-0">Recent exams</h2><button class="btn btn-sm btn-outline-secondary" data-refresh="exams">Refresh</button></div><div class="table-responsive"><table class="table mb-0"><thead><tr><th>Exam</th><th>Marks</th><th>Status</th></tr></thead><tbody id="exams-body"><tr><td colspan="3" class="muted">Loading…</td></tr></tbody></table></div></section></div>
+  <div class="col-12" id="approvals"><section class="panel p-3 p-lg-4"><div class="d-flex justify-content-between align-items-center mb-3"><h2 class="h6 section-title mb-0">Approval queue</h2><button class="btn btn-sm btn-outline-secondary" data-refresh="approval-gates">Refresh</button></div><div class="table-responsive"><table class="table mb-0"><thead><tr><th>Action</th><th>Explanation</th><th>Status</th><th>Created</th><th>Decision</th></tr></thead><tbody id="approval-gates-body"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody></table></div></section></div>
+</div>
+<footer class="small muted mt-4 text-center">AI-Edu Platform · Generated content must be reviewed before publication.</footer>
+</main>
+</div>
+</div>
 
-        <form id="question-form">
-          <input type="hidden" id="csrf-token" value="{{ csrf_token() }}">
-          <div class="row g-3">
-            <div class="col-12 col-md-6">
-              <label for="concept" class="form-label">Topic or concept</label>
-              <input id="concept" name="concept" class="form-control"
-                     maxlength="200" required
-                     placeholder="e.g. Photosynthesis">
-            </div>
-            <div class="col-12 col-md-3">
-              <label for="question-type" class="form-label">Question type</label>
-              <select id="question-type" class="form-select">
-                <option value="definition">Definition</option>
-                <option value="mcq">Multiple choice (MCQ)</option>
-                <option value="short_answer" selected>Short answer</option>
-                <option value="long_answer">Long answer</option>
-              </select>
-            </div>
-            <div class="col-12 col-md-3">
-              <label for="difficulty" class="form-label">Difficulty</label>
-              <select id="difficulty" class="form-select">
-                <option value="easy">Easy</option>
-                <option value="medium" selected>Medium</option>
-                <option value="hard">Hard</option>
-              </select>
-            </div>
-            <div class="col-12">
-              <button id="generate-button" class="btn btn-primary" type="submit">
-                Generate question
-              </button>
-            </div>
-          </div>
-        </form>
+<script>
+(() => {
+  const csrf = document.getElementById("csrf-token").value;
+  const globalStatus = document.getElementById("global-status");
+  const routes = {
+    institutions: "/api/institutions",
+    classes: "/api/classes",
+    "question-banks": "/api/question-banks",
+    exams: "/api/exams",
+    "approval-gates": "/api/approval-gates"
+  };
 
-        <div id="question-status" class="mt-3" role="status" aria-live="polite"></div>
-        <section id="question-result" class="mt-3 d-none" aria-label="Generated question">
-          <h3 class="h5">Generated draft</h3>
-          <p id="result-content" class="fw-semibold"></p>
-          <div id="result-choices" class="mb-2"></div>
-          <p><strong>Answer:</strong> <span id="result-answer"></span></p>
-          <p><strong>Explanation:</strong> <span id="result-explanation"></span></p>
-          <p class="small text-secondary mb-0">
-            Status: <span id="result-verification"></span>
-          </p>
-        </section>
-      </div>
-    </section>
+  function showGlobal(message, type = "danger") {
+    globalStatus.className = "alert alert-" + type;
+    globalStatus.textContent = message;
+  }
 
-    <script>
-    (() => {
-      const form = document.getElementById("question-form");
-      const button = document.getElementById("generate-button");
-      const status = document.getElementById("question-status");
-      const result = document.getElementById("question-result");
+  function safeText(value) {
+    return value === null || value === undefined || value === "" ? "—" : String(value);
+  }
 
-      form.addEventListener("submit", async (event) => {
-        event.preventDefault();
-        result.classList.add("d-none");
-        status.textContent = "Generating question…";
-        button.disabled = true;
+  function addCell(row, value) {
+    const cell = document.createElement("td");
+    cell.textContent = safeText(value);
+    row.appendChild(cell);
+  }
 
-        try {
-          const response = await fetch("/api/questions/generate", {
-            method: "POST",
-            credentials: "same-origin",
-            headers: {
-              "Content-Type": "application/json",
-              "X-CSRF-Token": document.getElementById("csrf-token").value
-            },
-            body: JSON.stringify({
-              concept: document.getElementById("concept").value.trim(),
-              question_type: document.getElementById("question-type").value,
-              difficulty: document.getElementById("difficulty").value
-            })
-          });
+  function setEmpty(tbody, columns, message) {
+    const row = document.createElement("tr");
+    const cell = document.createElement("td");
+    cell.colSpan = columns;
+    cell.className = "muted py-3";
+    cell.textContent = message;
+    row.appendChild(cell);
+    tbody.replaceChildren(row);
+  }
 
-          const data = await response.json();
-          if (!response.ok) {
-            throw new Error(data.error || "Question generation failed.");
-          }
-
-          const question = data.question || {};
-          document.getElementById("result-content").textContent =
-            question.content || "No question content returned.";
-
-          const choices = document.getElementById("result-choices");
-          choices.replaceChildren();
-          if (Array.isArray(question.choices) && question.choices.length) {
-            const heading = document.createElement("p");
-            heading.textContent = "Options:";
-            choices.appendChild(heading);
-            const list = document.createElement("ol");
-            question.choices.forEach((choice) => {
-              const item = document.createElement("li");
-              item.textContent = String(choice);
-              list.appendChild(item);
-            });
-            choices.appendChild(list);
-          }
-
-          document.getElementById("result-answer").textContent =
-            question.answer == null ? "Not provided" : String(question.answer);
-          document.getElementById("result-explanation").textContent =
-            question.explanation == null ? "Not provided" : String(question.explanation);
-          document.getElementById("result-verification").textContent =
-            question.verification_status || "unverified";
-
-          result.classList.remove("d-none");
-          status.textContent = "Draft generated. Review its accuracy before using it.";
-        } catch (error) {
-          status.textContent = error.message || "Unable to generate a question.";
-        } finally {
-          button.disabled = false;
-        }
+  async function getJSON(url, timeout = 12000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeout);
+    try {
+      const response = await fetch(url, {
+        credentials: "same-origin",
+        headers: {"Accept": "application/json"},
+        signal: controller.signal
       });
-    })();
-    </script>
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(response.status === 401 ? "Session expired. Please sign in again." : (data.error || "Request failed (" + response.status + ")."));
+      }
+      return data;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 
-  </main>
+  async function loadStats() {
+    const data = await getJSON("/api/dashboard/stats");
+    const stats = data.stats || {};
+    document.getElementById("stat-institutions").textContent = safeText(stats.institutions);
+    document.getElementById("stat-students").textContent = safeText(stats.students);
+    document.getElementById("stat-questions").textContent = safeText(stats.questions);
+    document.getElementById("stat-pending").textContent = safeText(stats.pending_approvals);
+  }
+
+  const tableConfigs = {
+    institutions: {body:"institutions-body", columns:3, key:"institutions", fields:["name","code","status"]},
+    classes: {body:"classes-body", columns:3, key:"classes", fields:["name","academic_year","status"]},
+    "question-banks": {body:"question-banks-body", columns:2, key:"question_banks", fields:["name","status"]},
+    exams: {body:"exams-body", columns:3, key:"exams", fields:["title","total_marks","status"]},
+    "approval-gates": {body:"approval-gates-body", columns:5, key:"approval_gates", fields:["action_type","explanation","status","created_at"]}
+  };
+
+  async function loadTable(name) {
+    const config = tableConfigs[name];
+    const tbody = document.getElementById(config.body);
+    setEmpty(tbody, config.columns, "Loading…");
+    try {
+      const data = await getJSON(routes[name]);
+      const items = data[config.key] || [];
+      if (!items.length) {
+        setEmpty(tbody, config.columns, "No records yet.");
+        return;
+      }
+      const fragment = document.createDocumentFragment();
+      items.forEach(item => {
+        const row = document.createElement("tr");
+        config.fields.forEach(field => addCell(row, item[field]));
+
+        if (name === "approval-gates") {
+          const actions = document.createElement("td");
+          if (item.status === "pending") {
+            const approve = document.createElement("button");
+            approve.type = "button";
+            approve.className = "btn btn-sm btn-success me-1 mb-1";
+            approve.textContent = "Approve";
+            approve.addEventListener("click", () => decideApproval(item.id, "approved", approve));
+
+            const reject = document.createElement("button");
+            reject.type = "button";
+            reject.className = "btn btn-sm btn-outline-danger mb-1";
+            reject.textContent = "Reject";
+            reject.addEventListener("click", () => decideApproval(item.id, "rejected", reject));
+
+            actions.append(approve, reject);
+          } else {
+            actions.textContent = "Decision recorded";
+          }
+          row.appendChild(actions);
+        }
+        fragment.appendChild(row);
+      });
+      tbody.replaceChildren(fragment);
+    } catch (error) {
+      setEmpty(tbody, config.columns, error.name === "AbortError" ? "Request timed out. Refresh to retry." : error.message);
+      throw error;
+    }
+  }
+
+  async function decideApproval(gateId, decision, clickedButton) {
+    if (!gateId) {
+      showGlobal("This approval row has no gate ID. Refresh and try again.");
+      return;
+    }
+    const action = decision === "approved" ? "approve" : "reject";
+    if (!window.confirm("Are you sure you want to " + action + " this request?")) return;
+
+    const row = clickedButton.closest("tr");
+    const buttons = row ? row.querySelectorAll("button") : [clickedButton];
+    buttons.forEach(button => { button.disabled = true; });
+
+    try {
+      const response = await fetch("/approval-gates/" + encodeURIComponent(gateId) + "/decide", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: {
+          "Content-Type": "application/json",
+          "Accept": "application/json",
+          "X-CSRF-Token": csrf
+        },
+        body: JSON.stringify({decision})
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || "Approval decision failed (HTTP " + response.status + ").");
+      }
+      showGlobal("Request " + action + "d successfully.", "success");
+      await Promise.all([loadTable("approval-gates"), loadStats()]);
+    } catch (error) {
+      showGlobal(error.message || "Could not save the decision.");
+      buttons.forEach(button => { button.disabled = false; });
+    }
+  }
+
+  async function refreshAll() {
+    const results = await Promise.allSettled([
+      loadStats(),
+      ...Object.keys(tableConfigs).map(loadTable)
+    ]);
+    const failed = results.filter(result => result.status === "rejected");
+    if (failed.length) {
+      document.getElementById("sidebar-status").textContent = "Some data unavailable";
+      showGlobal("Some dashboard data could not be loaded. Check your session or server, then use Refresh to retry.");
+    } else {
+      document.getElementById("sidebar-status").textContent = "Services responding";
+      globalStatus.classList.add("d-none");
+    }
+  }
+
+  document.querySelectorAll("[data-refresh]").forEach(button => {
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      try {
+        const name = button.dataset.refresh;
+        if (name === "stats") await loadStats();
+        else await loadTable(name);
+      } catch (error) {
+        showGlobal(error.message || "Could not refresh data.");
+      } finally {
+        button.disabled = false;
+      }
+    });
+  });
+
+  const form = document.getElementById("question-form");
+  const button = document.getElementById("generate-button");
+  const status = document.getElementById("question-status");
+  const result = document.getElementById("question-result");
+
+  form.addEventListener("submit", async event => {
+    event.preventDefault();
+    result.classList.add("d-none");
+    button.disabled = true;
+    button.textContent = "Generating…";
+    status.className = "mt-3 small text-primary";
+    status.textContent = "Generating your draft. This may take a little while…";
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 40000);
+
+    try {
+      const response = await fetch("/api/questions/generate", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: {
+          "Content-Type": "application/json",
+          "Accept": "application/json",
+          "X-CSRF-Token": csrf
+        },
+        body: JSON.stringify({
+          concept: document.getElementById("concept").value.trim(),
+          question_type: document.getElementById("question-type").value,
+          difficulty: document.getElementById("difficulty").value
+        }),
+        signal: controller.signal
+      });
+
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || "Generation failed (HTTP " + response.status + "). Check the AI provider configuration and server logs.");
+      }
+
+      const question = data.question || {};
+      document.getElementById("result-content").textContent = safeText(question.content || question.question);
+      document.getElementById("result-answer").textContent = safeText(question.answer);
+      document.getElementById("result-explanation").textContent = safeText(question.explanation);
+      document.getElementById("result-verification").textContent = safeText(question.verification_status || "unverified");
+
+      const choices = document.getElementById("result-choices");
+      choices.replaceChildren();
+      if (Array.isArray(question.choices) && question.choices.length) {
+        const heading = document.createElement("div");
+        heading.className = "fw-semibold mb-2";
+        heading.textContent = "Answer options";
+        const list = document.createElement("ol");
+        question.choices.forEach(choice => {
+          const item = document.createElement("li");
+          item.textContent = String(choice);
+          list.appendChild(item);
+        });
+        choices.append(heading, list);
+      }
+
+      result.classList.remove("d-none");
+      status.className = "mt-3 small text-success";
+      status.textContent = "Draft generated. Verify accuracy before using it.";
+    } catch (error) {
+      status.className = "mt-3 small text-danger";
+      status.textContent = error.name === "AbortError"
+        ? "The request timed out or was cancelled. Check the AI provider, model availability and API quota, then try again."
+        : (error.message || "Unable to generate a question.");
+    } finally {
+      clearTimeout(timer);
+      button.disabled = false;
+      button.textContent = "✦ Generate";
+    }
+  });
+
+  document.querySelectorAll(".sidebar .nav-link").forEach(link => {
+    link.addEventListener("click", () => {
+      document.querySelectorAll(".sidebar .nav-link").forEach(item => item.classList.remove("active"));
+      link.classList.add("active");
+    });
+  });
+
+  refreshAll();
+})();
+</script>
 </body>
 </html>

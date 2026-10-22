@@ -15,10 +15,12 @@ from flask import Flask, request, jsonify, g, abort, redirect, render_template, 
 from db import init_db, get_connection, DB_PATH
 from services import core, attendance, questions, exams, performance, governance
 from providers.base import get_default_registry
+from dashboard_api import dashboard_api
 
 load_dotenv()
 
 app = Flask(__name__)
+app.register_blueprint(dashboard_api)
 
 _secret = os.environ.get("SECRET_KEY")
 if not _secret:
@@ -70,7 +72,13 @@ _PROTECTED_API_PREFIXES = (
     "/blueprints/",
     "/approval-gates",
     "/providers/",
-)
+
+    "/api/dashboard/",
+    "/api/institutions",
+    "/api/classes",
+    "/api/question-banks",
+    "/api/exams",
+    "/api/approval-gates",)
 
 
 @app.before_request
@@ -257,7 +265,12 @@ def generate_question():
     if difficulty not in {"easy", "medium", "hard"}:
         return err("unsupported difficulty", 400)
 
-    provider = get_default_registry().get("openai-compatible")
+    registry = get_default_registry()
+    provider = registry.get("mistral-agent")
+
+    if provider is None:
+        provider = registry.get("openai-compatible")
+
     if provider is None:
         return err("AI provider is not configured", 503)
 
@@ -331,9 +344,18 @@ def create_approval_gate():
 def decide_approval_gate(gate_id):
     conn = get_db()
     body = request.get_json(silent=True) or {}
-    decision = governance.decide_approval(conn, gate_id, body["approver_id"], body["decision"])
-    return jsonify({"gate_id": gate_id, "decision": decision})
-
+    decision = body.get("decision")
+    if decision not in ("approved", "rejected"):
+        return err("decision must be approved or rejected")
+    approver_id = session.get("user")
+    if not approver_id:
+        return err("authentication_required", 401)
+    try:
+        result = governance.decide_approval(conn, gate_id, approver_id, decision)
+    except ValueError as exc:
+        message = str(exc)
+        return err(message, 404 if message == "approval gate not found" else 409)
+    return jsonify({"gate_id": gate_id, "decision": result})
 
 # ---------- Phase 10 ----------
 

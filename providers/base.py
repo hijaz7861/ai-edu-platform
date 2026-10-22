@@ -77,8 +77,21 @@ class StubProvider(AIProvider):
 
 
 def get_default_registry():
-    """Return the offline provider and configured online provider."""
+    """Return configured providers and the deterministic offline fallback."""
     registry = {"stub-offline-v1": StubProvider()}
+
+    mistral_key = os.environ.get("MISTRAL_API_KEY", "").strip()
+    mistral_agent_id = os.environ.get("MISTRAL_AGENT_ID", "").strip()
+
+    if mistral_key and mistral_agent_id:
+        from providers.mistral_agent import MistralAgentProvider
+
+        provider = MistralAgentProvider(
+            api_key=mistral_key,
+            agent_id=mistral_agent_id,
+        )
+        registry[provider.name] = provider
+
     api_key = os.environ.get("AI_API_KEY", "").strip()
     base_url = os.environ.get("AI_BASE_URL", "").strip()
     model = os.environ.get("AI_MODEL", "").strip()

@@ -54,13 +54,22 @@ def request_approval(conn, action_type, payload: dict, explanation: str, request
 def decide_approval(conn, gate_id, approver_id, decision):
     if decision not in ("approved", "rejected"):
         raise ValueError("decision must be approved or rejected")
-    conn.execute(
-        "UPDATE approval_gates SET status = ?, approver_id = ?, decided_at = ? WHERE id = ?",
-        (decision, approver_id, now(), gate_id),
-    )
+    if not approver_id or not str(approver_id).strip():
+        raise ValueError("approver identity is required")
+
+    row = conn.execute("SELECT status FROM approval_gates WHERE id = ?", (gate_id,)).fetchone()
+    if row is None:
+        raise ValueError("approval gate not found")
+    if row["status"] != "pending":
+        raise ValueError("approval gate has already been decided")
+
+    cursor = conn.execute("UPDATE approval_gates SET status = ?, approver_id = ?, decided_at = ? WHERE id = ? AND status = 'pending'",
+                          (decision, str(approver_id), now(), gate_id))
+    if cursor.rowcount != 1:
+        conn.rollback()
+        raise ValueError("approval gate has already been decided")
     conn.commit()
     return decision
-
 
 def execute_gated_action(conn, gate_id, action_fn):
     """action_fn only runs if the gate is genuinely approved — this is the actual
