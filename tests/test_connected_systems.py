@@ -176,7 +176,7 @@ def test_activation_requires_healthy_check_and_revocation_is_terminal(conn, monk
         conn,
         system_id,
         actor_id="platform-admin",
-        environ={},
+        environ={"CONNECTED_TEST_TOKEN": "test-token"},
         allowed_hosts=["api.example.com"],
     )
     assert systems.change_status(
