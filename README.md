@@ -53,7 +53,7 @@ CI evidence: [GitHub Actions run 40099716796](https://github.com/hijaz7861/ai-ed
 | Agent governance | Approval gates, audit redaction, retention, and provider selection foundations exist |
 | Login and sessions | One environment-configured platform-admin login with session/CSRF protections; no full multi-user identity system, recovery, or MFA |
 | SaaS plans and school access | Subscription plan/grant/status foundation exists in PR #1; it does not process payments |
-| Entitlement enforcement | Feature-check helper exists; enforcement on every protected endpoint and background job is **not verified** |
+| Entitlement enforcement | Production gates now protect class access, attendance, AI generation, question-bank analysis, and exam generation. Full route/background-job coverage and tenant identity binding remain outstanding |
 | Connected Systems | Architecture documented in PR #2; registry UI/runtime and live connector are not implemented |
 | Payment gateway | Not connected; manual paid-access records do not prove payment settlement |
 | Accounting, tax and FX | Design guidance only; no production-grade ledger/tax engine is claimed |
@@ -61,7 +61,7 @@ CI evidence: [GitHub Actions run 40099716796](https://github.com/hijaz7861/ai-ed
 
 ## API security notes
 
-Business API routes require a signed-in session and CSRF protection by default (`REQUIRE_API_AUTH=1`). Browser-session JSON mutations must send the session CSRF token using `X-CSRF-Token`. Admin subscription APIs remain protected even if legacy demo mode is explicitly enabled. Do not disable authentication on a network-exposed server.
+Business API routes require a signed-in session and CSRF protection by default (`REQUIRE_API_AUTH=1`). Production automatically enforces subscription feature gates on education routes; set `ENFORCE_ENTITLEMENTS=1` to exercise those gates in staging. Browser-session JSON mutations must send the session CSRF token using `X-CSRF-Token`. Admin subscription APIs remain protected even if legacy demo mode is explicitly enabled. Do not disable authentication on a network-exposed server.
 
 The current login is a **single configured platform-admin account**. Do not treat that as complete RBAC or as a school-user login system.
 
@@ -76,7 +76,7 @@ The complete prioritized backlog is in [docs/REMAINING_CAPABILITIES.md](docs/REM
 The most important outstanding work is:
 1. Persistent identities and complete server-side RBAC.
 2. Verified tenant isolation across every route, export and background job.
-3. Enforced subscription entitlements on every paid operation.
+3. Complete subscription enforcement on every paid operation and background job, including verified tenant identity binding.
 4. Real AI provider adapters, secure provider configuration and live contract tests.
 5. Connected Systems registry/runtime and an authenticated staging connector.
 6. Payment-provider sandbox integration and verified webhook-to-entitlement processing.
