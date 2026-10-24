@@ -125,6 +125,11 @@ def enforce_api_security():
         response.headers["Retry-After"] = "60"
         return response, 429
 
+    if session.get("user") and session.get("role") != "platform_admin":
+        # Until school-user login and route-level RBAC are implemented, fail
+        # closed rather than treating any authenticated session as an admin.
+        return jsonify({"error": "platform_admin_required"}), 403
+
     if legacy_mode and not is_admin_api:
         return None
 
@@ -142,6 +147,8 @@ def enforce_api_security():
 def admin_subscriptions_page():
     if not session.get("user"):
         return redirect(url_for("home"))
+    if session.get("role") != "platform_admin":
+        return jsonify({"error": "platform_admin_required"}), 403
     return render_template("subscriptions.html", username=session["user"])
 
 
