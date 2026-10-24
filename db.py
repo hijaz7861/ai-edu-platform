@@ -359,6 +359,34 @@ CREATE TABLE IF NOT EXISTS api_rate_limits (
 CREATE INDEX IF NOT EXISTS idx_api_rate_limits_window
     ON api_rate_limits(window_started_at);
 
+-- Connected Systems registry stores metadata and environment-variable references only.
+CREATE TABLE IF NOT EXISTS connected_systems (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    base_url TEXT NOT NULL,
+    auth_env_var TEXT,
+    institution_id TEXT REFERENCES institutions(id),
+    scopes_json TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'registered'
+        CHECK (status IN ('registered', 'active', 'paused', 'revoked')),
+    last_health_status TEXT,
+    last_health_at TEXT,
+    last_error_code TEXT,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_connected_systems_tenant_status
+    ON connected_systems(institution_id, status);
+CREATE TABLE IF NOT EXISTS connected_system_events (
+    id TEXT PRIMARY KEY,
+    system_id TEXT NOT NULL REFERENCES connected_systems(id),
+    actor_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    detail_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+
 """
 
 
