@@ -110,3 +110,17 @@ def test_invalid_status_change_does_not_mutate(conn):
             conn, sub_id, status="magic", actor_id="admin", reason="bad status",
         )
     assert get_current_subscription(conn, "school-1") is not None
+
+
+def test_second_active_subscription_requires_explicit_status_change(conn):
+    plan_a = create_plan(conn, code="first", name="First")
+    plan_b = create_plan(conn, code="second", name="Second")
+    grant_subscription(
+        conn, institution_id="school-1", plan_id=plan_a,
+        granted_by="admin", reason="Initial access",
+    )
+    with pytest.raises(ValueError, match="already has an active subscription"):
+        grant_subscription(
+            conn, institution_id="school-1", plan_id=plan_b,
+            granted_by="admin", reason="Overlapping access",
+        )
