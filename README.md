@@ -87,3 +87,51 @@ providers/base.py       # pluggable AI provider interface + honest offline stub
 app.py                  # runnable Flask server wiring the above
 tests/                   # Automated test suite
 ```
+
+
+---
+
+## SaaS commercial-access foundation (work in progress)
+
+The repository is being extended toward a multi-school service business. The
+subscription foundation currently includes:
+
+- **Plan catalog:** plans store a stable code, display name, currency, billing
+  interval, price in integer minor units, and JSON feature entitlements.
+- **Free school access:** a platform administrator can grant a school a free
+  plan, record a required reason, and optionally set an expiry date.
+- **Access checks:** feature access fails closed when there is no eligible
+  subscription, a feature is missing, or its value is not explicitly `true`.
+- **Audit trail:** grants and subscription status changes are recorded with
+  the acting account and reason.
+- **Admin UI:** open `/admin/subscriptions` after signing in to configure plans,
+  grant school access, inspect records, and suspend an active grant.
+- **Clean-checkout database startup:** the SQLite parent directory is created
+  automatically, addressing the database-open error seen in GitHub Actions on
+  2026-10-22.
+
+### Important production limits
+
+This is a foundation, **not yet a production-ready commercial SaaS release**.
+The current login is one configured platform-admin credential, not a complete
+school-user identity system. Payment collection, signed billing webhooks,
+password reset, per-school user provisioning, enforced role-based authorization
+on every business route, tenant-scoped dashboard queries, backups/restore,
+monitoring, and a production deployment review still need implementation and
+verification. A subscription record by itself must not be treated as proof that
+a payment was received. Real payments must be reconciled from verified
+server-side billing-provider events.
+
+The new subscription endpoints are session-authenticated and CSRF-protected.
+The entitlement service is available for business routes to call, but **each
+paid feature must explicitly enforce its entitlement at the server boundary**
+before this is advertised to paying schools.
+
+### Current verification status
+
+The previous main-branch CI run failed while importing the Flask app because
+the SQLite storage directory did not exist in a fresh runner. The branch change
+creates that directory before opening the database and adds tests for plan
+grants, expiry, audit records, overlapping subscriptions, authentication, and
+CSRF. These new tests must pass in GitHub Actions before the changes are merged.
+Do not interpret the older 39-test result above as verification of this branch.
