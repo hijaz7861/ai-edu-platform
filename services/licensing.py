@@ -49,7 +49,7 @@ def create_plan(
         raise ValueError("currency must be a 3-letter code")
     if billing_interval not in VALID_INTERVALS:
         raise ValueError("unsupported billing_interval")
-    if not isinstance(entitlements or {}, dict):
+    if entitlements is not None and not isinstance(entitlements, dict):
         raise ValueError("entitlements must be an object")
     plan_id = _id()
     now = _now()
