@@ -209,3 +209,79 @@ def test_missing_credential_does_not_attempt_network(conn, monkeypatch):
             environ={},
             allowed_hosts=["api.example.com"],
         )
+
+
+def test_admin_connected_system_api_registers_tests_and_activates(monkeypatch):
+    import app as app_module
+
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("REQUIRE_API_AUTH", "1")
+    monkeypatch.setenv("ADMIN_USERNAME", "connected-systems-admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "test-only-password-9284")
+    monkeypatch.setenv("CONNECTED_SYSTEM_ALLOWED_HOSTS", "api.example.com")
+    monkeypatch.setenv("CONNECTED_TEST_TOKEN", "api-secret-never-return")
+    monkeypatch.setenv("CONNECTED_SYSTEM_ALLOW_PRIVATE", "0")
+    monkeypatch.setattr(
+        systems.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [PUBLIC_DNS_RECORD],
+    )
+    monkeypatch.setattr(
+        systems,
+        "_health_request",
+        lambda base_url, host, port, addresses, token=None, timeout=8: {
+            "status": "healthy",
+            "http_status": 200,
+            "token_seen": bool(token == "api-secret-never-return"),
+        },
+    )
+    app_module.app.config.update(TESTING=True)
+
+    with app_module.app.test_client() as client:
+        client.get("/")
+        with client.session_transaction() as session:
+            csrf = session["csrf_token"]
+        response = client.post(
+            "/auth/login",
+            data={
+                "username": "connected-systems-admin",
+                "password": "test-only-password-9284",
+                "csrf_token": csrf,
+            },
+        )
+        assert response.status_code == 302
+        with client.session_transaction() as session:
+            csrf = session["csrf_token"]
+
+        created = client.post(
+            "/api/admin/connected-systems",
+            json={
+                "name": "Research service",
+                "base_url": "https://api.example.com",
+                "auth_env_var": "CONNECTED_TEST_TOKEN",
+                "scopes": ["health:read"],
+            },
+            headers={"X-CSRF-Token": csrf},
+        )
+        assert created.status_code == 201
+        system_id = created.get_json()["id"]
+
+        listing = client.get("/api/admin/connected-systems")
+        assert listing.status_code == 200
+        assert "api-secret-never-return" not in listing.get_data(as_text=True)
+
+        checked = client.post(
+            f"/api/admin/connected-systems/{system_id}/test",
+            json={},
+            headers={"X-CSRF-Token": csrf},
+        )
+        assert checked.status_code == 200
+        assert checked.get_json()["status"] == "healthy"
+
+        activated = client.post(
+            f"/api/admin/connected-systems/{system_id}/status",
+            json={"status": "active", "reason": "Health check verified"},
+            headers={"X-CSRF-Token": csrf},
+        )
+        assert activated.status_code == 200
+        assert activated.get_json()["status"] == "active"
