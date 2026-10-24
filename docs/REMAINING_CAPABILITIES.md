@@ -5,7 +5,8 @@ This is the implementation backlog for taking the AI Education Platform from its
 ## P0 — Security and tenant boundaries
 
 - [ ] Replace the single environment-configured platform login with persistent user identities, secure password hashing, session rotation, login throttling/lockout, recovery, and optional MFA.
-- [ ] Enforce server-side RBAC for every route and action; role names or UI visibility alone must never grant access.
+- [x] Add an explicit `platform_admin` session-role guard for protected APIs and subscription administration; CI run [40100803698](https://github.com/hijaz7861/ai-edu-platform/actions/runs/40100803698) passed 83 tests. This is a fail-closed stopgap, not full multi-user RBAC.
+- [ ] Implement persistent identities and server-side role/permission checks for every route and action; role names or UI visibility alone must never grant access.
 - [ ] Bind every institution-owned record and query to the authenticated user's authorized institution scope; add cross-tenant denial tests for reads, writes, exports, and background jobs.
 - [ ] Add an explicit platform-admin permission boundary and separate school administrators, teachers, students, reviewers, and service identities.
 - [ ] Fail closed when production secrets/configuration are missing; enforce secure cookies, trusted-host/proxy settings, request limits, and safe error responses.
