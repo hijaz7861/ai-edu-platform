@@ -152,6 +152,15 @@ def admin_subscriptions_page():
     return render_template("subscriptions.html", username=session["user"])
 
 
+@app.get("/admin/connected-systems")
+def connected_systems_admin_page():
+    if not session.get("user"):
+        return redirect(url_for("home"))
+    if session.get("role") != "platform_admin":
+        return jsonify({"error": "platform_admin_required"}), 403
+    return render_template("connected_systems.html", username=session["user"])
+
+
 @app.route("/", methods=["GET"])
 def home():
     if session.get("user"):
