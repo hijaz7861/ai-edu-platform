@@ -254,6 +254,10 @@ def test_admin_connected_system_api_registers_tests_and_activates(monkeypatch):
         with client.session_transaction() as session:
             csrf = session["csrf_token"]
 
+        page = client.get("/admin/connected-systems")
+        assert page.status_code == 200
+        assert b"Connected Systems" in page.data
+
         created = client.post(
             "/api/admin/connected-systems",
             json={
