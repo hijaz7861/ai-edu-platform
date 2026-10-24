@@ -26,12 +26,13 @@ For production, set `APP_ENV=production`, provide a stable `SECRET_KEY` and conf
 python3 -m pytest -q
 ```
 
-Previously verified CI for security-configuration commit `829d27d8100b502ac8dcecfac06694adfa351d00`:
-- 57 tests passed.
+Latest verified CI for commit `29c65fab061812ad66bb83d016d0eb921894c651`:
+- 64 tests passed.
 - Python syntax audit passed.
 - Production configuration check passed.
+- Gemini adapter tests cover request format, key-header placement, response parsing, sanitized HTTP errors, registry configuration, and route-level provider selection.
 
-CI evidence: [GitHub Actions run 40099404683](https://github.com/hijaz7861/ai-edu-platform/actions/runs/40099404683). That run predates the Gemini adapter and README updates; the current branch head must pass its own CI before those changes are considered verified. This result does not certify all listed future capabilities.
+CI evidence: [GitHub Actions run 40099716796](https://github.com/hijaz7861/ai-edu-platform/actions/runs/40099716796). This verifies the adapter against controlled test responses, not a live Gemini account, quota, or network transaction. It does not certify all listed future capabilities.
 
 ## Capability status
 
