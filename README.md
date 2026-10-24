@@ -26,18 +26,16 @@ For production, set `APP_ENV=production`, provide a stable `SECRET_KEY` and conf
 python3 -m pytest -q
 ```
 
-Latest verified CI for commit `6cbd355174e7085b606756ae06ab5b0a524894d1`:
-- 83 tests passed.
+Latest verified CI for commit `a0ff387ecfd5a3e12bc491404f35842f1b5836ea`:
+- 92 tests passed.
 - Python syntax audit passed.
 - Production configuration check passed.
 - Gemini adapter tests cover request format, key-header placement, response parsing, sanitized HTTP errors, registry configuration, and route-level provider selection.
 - Entitlement tests cover production fail-closed behavior for missing institution IDs and missing subscriptions on gated routes.
-- Login throttling tests cover five failed attempts, persistence, reset, and the full cooldown duration.
-- Security-header tests cover MIME sniffing, framing, referrer policy, permissions policy, opener isolation, and no-store on sensitive pages.
-- API rate-limit tests cover the fixed window, 429 response/Retry-After, configuration validation, and bounded persistent state.
-- Authorization regression tests confirm sessions without the explicit platform-admin role cannot access protected APIs or subscription administration.
+- Login throttling, security-header, and API rate-limit tests cover the documented controls.
+- Connected Systems tests cover HTTPS/host allowlisting, private-IP rejection, environment-referenced credentials, bounded health responses, audit events, lifecycle transitions, and admin API/page behavior.
 
-CI evidence: [GitHub Actions run 40100803698](https://github.com/hijaz7861/ai-edu-platform/actions/runs/40100803698). Gemini tests use controlled responses, not a live Gemini account/quota/network transaction. Entitlement gates currently cover class access, attendance, AI generation, question-bank analysis, and exam generation; complete coverage of every route/background job and trusted user-to-tenant binding is still outstanding.
+CI evidence: [GitHub Actions run 40101441115](https://github.com/hijaz7861/ai-edu-platform/actions/runs/40101441115). Connected Systems tests use controlled DNS/network responses; no real external system was contacted. Gemini tests use controlled responses, not a live Gemini account/quota/network transaction. Entitlement gates currently cover class access, attendance, AI generation, question-bank analysis, and exam generation; complete coverage of every route/background job and trusted user-to-tenant binding is still outstanding.
 
 ## Capability status
 
@@ -59,7 +57,7 @@ CI evidence: [GitHub Actions run 40100803698](https://github.com/hijaz7861/ai-ed
 | Login and sessions | One environment-configured platform-admin login with session/CSRF protections, persistent per-username/IP failed-login throttling, baseline security headers, and no-store on sensitive pages; sessions without the explicit platform-admin role are denied protected routes. No full multi-user identity system, recovery, or MFA |
 | SaaS plans and school access | Subscription plan/grant/status foundation exists in PR #1; it does not process payments |
 | Entitlement enforcement | Production gates now protect class access, attendance, AI generation, question-bank analysis, and exam generation. Full route/background-job coverage and tenant identity binding remain outstanding |
-| Connected Systems | Architecture documented in PR #2; registry UI/runtime and live connector are not implemented |
+| Connected Systems | Admin UI and registry API now exist. Credentials are referenced by environment-variable name; HTTPS health checks use exact host allowlists, DNS/IP validation and pinning, no redirects, lifecycle gates and audit events. No real action connector/webhook or live system connection is verified |
 | Payment gateway | Not connected; manual paid-access records do not prove payment settlement |
 | Accounting, tax and FX | Design guidance only; no production-grade ledger/tax engine is claimed |
 | Production operations | Backup/restore drills, monitoring, disaster recovery, production deployment and rollback are not verified |
@@ -98,6 +96,7 @@ dashboard_api.py             # dashboard and subscription APIs
 services/core.py             # education CRUD, role and scope helpers
 services/licensing.py        # plans, grants, subscription status, entitlement helper
 services/security_config.py  # production configuration validation
+services/connected_systems.py # allowlisted Connected Systems registry and health checks
 services/attendance.py       # attendance workflows
 services/ingestion.py        # OCR/ingestion helpers
 services/questions.py        # duplicate detection and question-bank logic
@@ -106,7 +105,7 @@ services/performance.py      # performance analysis
 services/governance.py       # approval gates, audit and provider governance
 providers/base.py            # provider interface, registry and OpenAI-compatible adapter
 providers/gemini.py           # native Gemini REST adapter
-templates/                   # login, dashboard and subscription UI
-tests/                       # automated tests
+templates/                   # login, dashboard, subscription and Connected Systems UI
+tests/                       # automated tests, including Connected Systems security tests
 docs/                        # architecture, integration, finance and release-gate documents
 ```
