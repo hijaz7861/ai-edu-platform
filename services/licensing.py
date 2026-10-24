@@ -103,6 +103,9 @@ def grant_subscription(
     if not plan or not plan["is_active"]:
         raise ValueError("plan not found or inactive")
 
+    if get_current_subscription(conn, institution_id):
+        raise ValueError("institution already has an active subscription; change its status before granting another")
+
     now = _now()
     subscription_id = _id()
     conn.execute(
