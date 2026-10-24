@@ -81,3 +81,17 @@ def test_login_route_returns_429_after_five_bad_passwords(monkeypatch):
             statuses.append(response.status_code)
 
     assert statuses == [401, 401, 401, 401, 429]
+
+
+def test_lock_cooldown_is_not_shortened_by_failure_window_expiry(conn):
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    key = "late-window-lock"
+    for attempt in range(5):
+        moment = start + timedelta(minutes=3 * attempt)
+        locked = record_failure(conn, key, now=moment)
+    assert locked is True
+
+    # The failure window expires at +15 minutes, but the fifth attempt's
+    # lock must remain active until +27 minutes.
+    assert is_locked(conn, key, now=start + timedelta(minutes=16)) is True
+    assert is_locked(conn, key, now=start + timedelta(minutes=28)) is False
