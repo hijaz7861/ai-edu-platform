@@ -9,7 +9,7 @@ python3 -m pip install -r requirements.txt
 python3 app.py
 ```
 
-The app listens on port 8080. OCR additionally requires the Tesseract system executable. Configure `.env` using `.env.example` before logging in.
+The app listens on port 8080. OCR additionally requires the Tesseract system executable. Configure `.env` using `.env.example` before logging in. Gemini can be configured with `GEMINI_API_KEY` and `GEMINI_MODEL`; Mistral chat-completions can use the OpenAI-compatible adapter with `AI_BASE_URL=https://api.mistral.ai/v1`. Set `AI_PROVIDER` to pin a provider, or leave it blank to auto-select a configured real provider.
 
 Required local settings:
 
@@ -26,12 +26,12 @@ For production, set `APP_ENV=production`, provide a stable `SECRET_KEY` and conf
 python3 -m pytest -q
 ```
 
-Latest verified CI for commit `829d27d8100b502ac8dcecfac06694adfa351d00`:
+Previously verified CI for security-configuration commit `829d27d8100b502ac8dcecfac06694adfa351d00`:
 - 57 tests passed.
 - Python syntax audit passed.
 - Production configuration check passed.
 
-CI evidence: [GitHub Actions run 40099404683](https://github.com/hijaz7861/ai-edu-platform/actions/runs/40099404683). This result applies to that exact commit and test suite; it does not certify all listed future capabilities.
+CI evidence: [GitHub Actions run 40099404683](https://github.com/hijaz7861/ai-edu-platform/actions/runs/40099404683). That run predates the Gemini adapter and README updates; the current branch head must pass its own CI before those changes are considered verified. This result does not certify all listed future capabilities.
 
 ## Capability status
 
@@ -45,7 +45,7 @@ CI evidence: [GitHub Actions run 40099404683](https://github.com/hijaz7861/ai-ed
 | OCR | Tesseract/OpenCV processing helpers exist; complete upload/PDF/job/retry pipeline needs further integration |
 | Knowledge extraction | Deep model-backed concept extraction is not complete |
 | Question duplicate detection | TF-IDF/cosine-similarity implementation exists where dependencies are available |
-| AI question generation | Provider interface exists; offline stub is not a real LLM; real provider adapters and live contract tests need verification |
+| AI question generation | Native Gemini REST adapter and OpenAI-compatible adapter exist; Mistral Agent adapter is available when configured. Offline stub is not a real LLM. Adapter tests do not prove a live provider account/quota works |
 | Exam assembly | Blueprint-driven selection logic exists and rejects insufficient question pools |
 | Performance tracking | Stored-answer/topic-performance service logic exists |
 | Notifications and voice/NLU | Real email/SMS/push delivery and full model-backed NLU are not complete |
@@ -98,7 +98,8 @@ services/questions.py        # duplicate detection and question-bank logic
 services/exams.py            # exam blueprint assembly
 services/performance.py      # performance analysis
 services/governance.py       # approval gates, audit and provider governance
-providers/base.py            # provider interface and configured/offline provider logic
+providers/base.py            # provider interface, registry and OpenAI-compatible adapter
+providers/gemini.py           # native Gemini REST adapter
 templates/                   # login, dashboard and subscription UI
 tests/                       # automated tests
 docs/                        # architecture, integration, finance and release-gate documents
