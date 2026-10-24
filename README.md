@@ -26,13 +26,14 @@ For production, set `APP_ENV=production`, provide a stable `SECRET_KEY` and conf
 python3 -m pytest -q
 ```
 
-Latest verified CI for commit `29c65fab061812ad66bb83d016d0eb921894c651`:
-- 64 tests passed.
+Latest verified CI for commit `900af7ccaf3c2ca9a79b7e0850d6f01f8a765da0`:
+- 68 tests passed.
 - Python syntax audit passed.
 - Production configuration check passed.
 - Gemini adapter tests cover request format, key-header placement, response parsing, sanitized HTTP errors, registry configuration, and route-level provider selection.
+- Entitlement tests cover production fail-closed behavior for missing institution IDs and missing subscriptions on gated routes.
 
-CI evidence: [GitHub Actions run 40099716796](https://github.com/hijaz7861/ai-edu-platform/actions/runs/40099716796). This verifies the adapter against controlled test responses, not a live Gemini account, quota, or network transaction. It does not certify all listed future capabilities.
+CI evidence: [GitHub Actions run 40099977782](https://github.com/hijaz7861/ai-edu-platform/actions/runs/40099977782). This verifies the adapter against controlled test responses, not a live Gemini account, quota, or network transaction. Entitlement gates currently cover class access, attendance, AI generation, question-bank analysis, and exam generation; complete coverage of every route/background job and trusted user-to-tenant binding is still outstanding.
 
 ## Capability status
 
