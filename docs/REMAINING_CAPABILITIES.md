@@ -14,7 +14,8 @@ This is the implementation backlog for taking the AI Education Platform from its
 
 ## P0 — Subscription and entitlement enforcement
 
-- [ ] Enforce active plan, date window, institution scope, and feature entitlement server-side on every paid feature endpoint and asynchronous job.
+- [x] Add production feature gates for class access, attendance, AI generation, question-bank analysis, and exam generation; CI run [40099977782](https://github.com/hijaz7861/ai-edu-platform/actions/runs/40099977782) passed 68 tests on commit `900af7ccaf3c2ca9a79b7e0850d6f01f8a765da0`.
+- [ ] Complete enforcement on every paid endpoint and asynchronous job, including trusted user-to-tenant binding.
 - [ ] Add tests for absent, inactive, expired, suspended, malformed, and cross-tenant subscription cases.
 - [ ] Add a safe subscription state transition model and idempotent audit events.
 - [ ] Keep manual paid-access records distinct from verified payment settlement; never imply that an admin record proves a charge succeeded.
