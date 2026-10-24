@@ -157,7 +157,8 @@ def test_connection_failure_is_audited_without_secret(conn, monkeypatch):
     assert row["last_health_status"] == "unhealthy"
     assert row["last_error_code"] == "connected_system_http_503"
     event = conn.execute(
-        "SELECT event_type, detail_json FROM connected_system_events WHERE system_id = ?",
+        """SELECT event_type, detail_json FROM connected_system_events
+           WHERE system_id = ? ORDER BY rowid DESC LIMIT 1""",
         (system_id,),
     ).fetchone()
     assert event["event_type"] == "health_check"
