@@ -90,3 +90,77 @@ Every action must be authorized server-side, scoped to the tenant, and audited. 
 - Run database migration, backup/restore, incident response, monitoring, and alert tests before production launch.
 
 Until these gates pass, payment providers and automatic activation must be marked as planned or sandbox-only; do not describe the platform as accepting real payments.
+
+
+## International-grade finance, compliance, and resilience controls
+
+These controls must be implemented in proportion to the merchant's operating countries, customer regions, payment methods, and legal entity. A checklist does not replace qualified legal, tax, accounting, security, or compliance advice.
+
+### Financial ledger and accounting integrity
+
+- Implement an append-only, double-entry ledger for financial postings. Each journal must balance to zero in its functional currency; corrections use reversing/adjusting entries rather than editing historical postings.
+- Keep order, payment attempt, provider transaction, settlement, invoice, refund, chargeback, fee, tax, payout, and ledger-journal records distinct but linked by stable IDs.
+- Model gross amount, provider fee, tax, net settlement, refund, and payout separately. Never assume a successful customer payment means the merchant's bank payout has settled.
+- Use database transactions, foreign keys, unique constraints, and idempotency keys for state transitions and ledger posting. Do not derive accounting balances solely by summing mutable subscription rows.
+- Define a finance close process, reconciliation reports, controlled adjustments, and exportable records for the accountant. Preserve original timestamps and provider references.
+- Keep an explicit record of who/what initiated each change, why it occurred, source event, prior state, new state, and correlation ID. Restrict correction and refund permissions independently.
+
+### International currency, pricing, and tax
+
+- Maintain a supported-currency catalog with ISO 4217 currency codes, correct minor-unit precision, and explicit settlement currencies for each provider.
+- Store original transaction currency and amount separately from any reporting/base-currency amount. Record the FX rate, source, timestamp, rate type, and rounding rule used; do not silently recalculate historical invoices when exchange rates change.
+- Present the customer with the final payable amount and currency before checkout. Clearly disclose conversion, cross-border, and payment-method fees where applicable.
+- Version prices and plan entitlements. An existing invoice/subscription must retain the price terms applicable when it was created unless the customer accepts a permitted change.
+- Support jurisdiction-aware invoice numbering, seller/customer details, tax IDs where required, tax-inclusive/exclusive display, credit notes, refunds, and legally required retention. Do not hardcode one country's VAT/GST/sales-tax assumptions globally.
+- Use a suitable tax calculation/invoicing service or qualified accounting rules where required; record the tax decision and the jurisdiction/rule version used.
+- Assess VAT/GST/sales tax, digital-service rules, invoicing requirements, consumer cancellation/refund rights, recurring-payment consent, sanctions, AML/KYC, and crypto rules for each intended market before enabling that market. Seek qualified local advice; the software cannot determine legal compliance on its own.
+- Keep a market enablement matrix: country/region, merchant eligibility, payment methods, currencies, tax handling, required verification, and operational owner. Disable unsupported combinations explicitly.
+
+### Payment security and fraud prevention
+
+- Prefer hosted checkout and provider tokenization. The platform must not receive or store raw card PAN/CVV data. Confirm the actual PCI DSS scope with the acquirer/provider and a qualified assessor; hosted checkout can reduce scope but does not automatically eliminate obligations.
+- Support applicable Strong Customer Authentication / 3-D Secure flows through the selected provider where required. Never attempt to bypass issuer authentication or treat an authorization as final settlement.
+- Apply risk-based controls for velocity, repeated failed attempts, unusual amount/currency changes, account takeover indicators, mismatched billing context, repeated receipt reuse, suspicious refund patterns, and high-risk manual adjustments.
+- Use step-up authentication and, where appropriate, two-person approval for changing payout destinations, rotating production payment keys, issuing high-value refunds, or granting exceptional paid access.
+- Do not store unnecessary identity documents or payment metadata. If identity verification is legally required, use a suitable regulated provider and define retention/access controls.
+- Add abuse controls for free trials, promo codes, referral credits, and repeated account creation; set explicit limits and monitor cost exposure.
+- Provide a documented dispute evidence workflow with relevant invoice, consent, service-delivery, and transaction records, while avoiding unnecessary sensitive student data.
+
+### Reliability, event processing, and recovery
+
+- Use a durable queue/outbox pattern so a verified payment event and its downstream entitlement/ledger jobs cannot silently diverge. Make each consumer idempotent and safely retryable.
+- Handle out-of-order and delayed provider events by fetching current provider state and validating allowed transitions; do not blindly apply older events over newer state.
+- Add dead-letter queues, bounded retries with backoff, provider circuit breakers, webhook delivery monitoring, and an operator replay tool that preserves idempotency and audit trails.
+- Define service-level objectives for checkout creation, webhook acknowledgement, entitlement activation, reconciliation freshness, and billing-portal availability. Alert on threshold breaches rather than relying on manual discovery.
+- Schedule automated reconciliation between internal payments, provider events, settlement reports, bank credits, fees, refunds, disputes, and crypto confirmations. Keep an exception queue with owner, age, severity, and resolution notes.
+- Create tested backup/restore and disaster-recovery plans with documented recovery time and recovery point objectives. Restore tests must verify both ledger integrity and entitlement consistency.
+- Maintain a kill switch to disable a failing provider or payment method without corrupting existing subscriptions. Provide a safe manual recovery path and status page/incident communications.
+- Use a sandbox/staging environment with test keys and synthetic transactions. Block accidental production payments in automated tests and require explicit approval for production configuration changes.
+
+### Privacy, accessibility, and customer trust
+
+- Apply data minimization, purpose limitation, access controls, retention schedules, and deletion/anonymization procedures consistent with applicable privacy law and contractual obligations. Keep legally required accounting records where deletion cannot lawfully be performed.
+- Separate payment/billing data from student academic records and restrict joins/exports by role. Payment providers should receive only the minimum customer information required for the transaction.
+- Document data flows, subprocessors, international transfers, retention, incident response, and customer rights for relevant jurisdictions. Execute appropriate data-processing agreements where required.
+- Make checkout and billing portal mobile-friendly, keyboard accessible, screen-reader compatible, localized for supported languages, and clear about recurring charges, renewal dates, cancellation, refunds, and payment status.
+- Send accessible receipts and notifications without exposing sensitive payment details. Avoid disclosing student or family information in payment emails, logs, or finance dashboards unless strictly necessary.
+- Provide clear support and escalation paths for pending transfers, duplicate charges, failed renewals, refunds, and account access after payment.
+
+### Operational governance and observability
+
+- Assign named owners for payment integrations, reconciliation exceptions, compliance reviews, refunds/disputes, incident response, and key rotation.
+- Record structured, redacted audit events with correlation IDs; metrics should cover payment success/failure by provider and country, webhook lag, reconciliation differences, refund/dispute rate, renewal recovery, and entitlement activation latency.
+- Use alerts and dashboards without logging full card details, bank login data, full secrets, private keys, or unnecessary prompts/customer data.
+- Review provider availability, fees, payout delays, dispute processes, API version changes, and country coverage periodically. Version adapters and contract tests; deprecate providers through a migration plan rather than an abrupt cut-off.
+- Create a vendor exit plan: export required transaction records, preserve ledger/audit history, rotate credentials, handle existing recurring mandates, and migrate customers with appropriate notice and consent.
+- Define incident playbooks for compromised keys, forged webhooks, duplicate charges, provider outage, ledger mismatch, unauthorized refund, and crypto misdirection. Preserve evidence and notify affected parties/regulators where legally required.
+
+## Additional release gates
+
+- Ledger property tests prove every posted journal balances and duplicate events cannot duplicate financial postings.
+- FX tests prove historical invoice totals remain stable after exchange-rate updates and rounding follows the selected currency's minor-unit rules.
+- Test tax/invoice behavior for every enabled jurisdiction with reviewed examples; unsupported jurisdictions must fail closed rather than guess.
+- Test webhook signature failures, stale timestamps, replay, duplicate delivery, out-of-order events, queue outage, retry, dead-letter recovery, and manual replay.
+- Test provider outage and kill-switch behavior, backup restoration, ledger/subscription consistency, and recovery after partial failure.
+- Test role separation for payout settings, refunds, manual receipt approval, free grants, ledger adjustments, provider secrets, and audit exports.
+- Obtain documented sign-off for provider onboarding, applicable PCI scope, privacy/data processing, tax/accounting treatment, market eligibility, and crypto/payment compliance before enabling production traffic.
