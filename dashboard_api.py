@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from flask import Blueprint, jsonify, g, request, session
 from db import get_connection, DB_PATH
 from services.licensing import create_plan, grant_subscription, change_subscription_status
@@ -112,6 +113,8 @@ def admin_create_plan():
         )
     except (ValueError, TypeError) as exc:
         return jsonify({"error": str(exc)}), 400
+    except sqlite3.IntegrityError:
+        return jsonify({"error": "plan code already exists"}), 409
     return jsonify({"plan_id": plan_id}), 201
 
 
