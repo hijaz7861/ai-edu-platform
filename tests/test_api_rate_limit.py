@@ -66,3 +66,13 @@ def test_api_rate_limit_middleware_returns_429(monkeypatch):
     assert third.status_code == 429
     assert third.get_json()["error"] == "rate_limit_exceeded"
     assert third.headers["Retry-After"] == "60"
+
+
+def test_api_rate_limit_state_is_bounded_and_expired_keys_are_reclaimed(conn, monkeypatch):
+    import services.api_rate_limit as limiter
+
+    monkeypatch.setattr(limiter, "MAX_TRACKED_KEYS", 1)
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    assert allow_request(conn, "first-key", limit=10, now=start) is True
+    assert allow_request(conn, "second-key", limit=10, now=start + timedelta(seconds=1)) is False
+    assert allow_request(conn, "second-key", limit=10, now=start + timedelta(seconds=121)) is True
