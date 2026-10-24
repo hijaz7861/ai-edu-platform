@@ -78,7 +78,8 @@ _PROTECTED_API_PREFIXES = (
     "/api/classes",
     "/api/question-banks",
     "/api/exams",
-    "/api/approval-gates",)
+    "/api/approval-gates",
+    "/api/admin/",)
 
 
 @app.before_request
@@ -98,6 +99,13 @@ def enforce_api_security():
             return jsonify({"error": "csrf_invalid"}), 400
 
     return None
+
+
+@app.get("/admin/subscriptions")
+def admin_subscriptions_page():
+    if not session.get("user"):
+        return redirect(url_for("home"))
+    return render_template("subscriptions.html", username=session["user"])
 
 
 @app.route("/", methods=["GET"])
