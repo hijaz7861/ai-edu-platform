@@ -107,3 +107,29 @@ def test_admin_subscription_mutations_require_csrf(client):
     )
     assert response.status_code == 400
     assert response.get_json()["error"] == "csrf_invalid"
+
+def test_admin_api_remains_protected_in_legacy_mode(client, monkeypatch):
+    monkeypatch.setenv("REQUIRE_API_AUTH", "0")
+
+    response = client.get("/api/admin/plans")
+    assert response.status_code == 401
+    assert response.get_json()["error"] == "authentication_required"
+
+    response = client.post(
+        "/api/admin/plans",
+        json={"code": "legacy-mode-write", "name": "Must Stay Protected"},
+    )
+    assert response.status_code == 401
+    assert response.get_json()["error"] == "authentication_required"
+
+
+def test_admin_api_still_requires_csrf_in_legacy_mode(client, monkeypatch):
+    monkeypatch.setenv("REQUIRE_API_AUTH", "0")
+    login(client)
+
+    response = client.post(
+        "/api/admin/plans",
+        json={"code": "missing-csrf-legacy", "name": "Must Stay Protected"},
+    )
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "csrf_invalid"
