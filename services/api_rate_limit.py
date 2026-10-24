@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 
 WINDOW_SECONDS = 60
+MAX_TRACKED_KEYS = 10000
 
 
 def allow_request(conn, key_hash: str, *, limit: int = 120, now=None) -> bool:
@@ -18,6 +19,16 @@ def allow_request(conn, key_hash: str, *, limit: int = 120, now=None) -> bool:
             "SELECT request_count, window_started_at FROM api_rate_limits WHERE key_hash = ?",
             (key_hash,),
         ).fetchone()
+        if row is None:
+            # Bound persistent state when callers rotate client addresses. Expired
+            # entries are removed only on a new-key path, and the index keeps cleanup bounded.
+            cutoff = (moment - timedelta(seconds=WINDOW_SECONDS * 2)).isoformat()
+            conn.execute("DELETE FROM api_rate_limits WHERE window_started_at < ?", (cutoff,))
+            tracked = conn.execute("SELECT COUNT(*) AS total FROM api_rate_limits").fetchone()["total"]
+            if tracked >= MAX_TRACKED_KEYS:
+                conn.commit()
+                return False
+
         if row is None or moment >= datetime.fromisoformat(
             row["window_started_at"].replace("Z", "+00:00")
         ) + timedelta(seconds=WINDOW_SECONDS):
