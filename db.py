@@ -342,6 +342,15 @@ CREATE TABLE IF NOT EXISTS subscription_events (
 CREATE INDEX IF NOT EXISTS idx_subscription_events_institution
     ON subscription_events(institution_id, created_at);
 
+-- Persistent login throttling; key_hash is an HMAC, never a raw username/IP/password.
+CREATE TABLE IF NOT EXISTS login_rate_limits (
+    key_hash TEXT PRIMARY KEY,
+    failures INTEGER NOT NULL DEFAULT 0,
+    window_started_at TEXT NOT NULL,
+    locked_until TEXT,
+    updated_at TEXT NOT NULL
+);
+
 """
 
 
