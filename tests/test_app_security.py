@@ -133,3 +133,14 @@ def test_admin_api_still_requires_csrf_in_legacy_mode(client, monkeypatch):
     )
     assert response.status_code == 400
     assert response.get_json()["error"] == "csrf_invalid"
+
+
+
+def test_security_headers_and_sensitive_page_cache_policy(client):
+    response = client.get("/")
+    assert response.headers["X-Content-Type-Options"] == "nosniff"
+    assert response.headers["X-Frame-Options"] == "DENY"
+    assert response.headers["Referrer-Policy"] == "strict-origin-when-cross-origin"
+    assert response.headers["Permissions-Policy"] == "camera=(), microphone=(), geolocation=()"
+    assert response.headers["Cross-Origin-Opener-Policy"] == "same-origin"
+    assert response.headers["Cache-Control"] == "no-store"
