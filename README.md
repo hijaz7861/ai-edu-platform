@@ -1,5 +1,7 @@
 # AI Education Platform — Runnable Reference Implementation
 
+[![CI](https://github.com/hijaz7861/ai-edu-platform/actions/workflows/platform-ci.yml/badge.svg?branch=main)](https://github.com/hijaz7861/ai-edu-platform/actions/workflows/platform-ci.yml) [![TLS Certificate Check](https://github.com/hijaz7861/ai-edu-platform/actions/workflows/tls-check.yml/badge.svg)](https://github.com/hijaz7861/ai-edu-platform/actions/workflows/tls-check.yml) [![Python 3.13](https://img.shields.io/badge/python-3.13-blue.svg)](https://www.python.org/downloads/release/python-3130/)
+
 A runnable Flask/SQLite reference implementation for education workflows and the foundation of a multi-tenant SaaS. It is **not yet a complete or production-ready education SaaS**. Read the status table below before relying on any capability.
 
 ## Run locally
@@ -18,7 +20,7 @@ Required local settings:
 - `REQUIRE_API_AUTH=1`: keep business APIs protected
 - `COOKIE_SECURE=1` when serving HTTPS outside local development
 
-For production, set `APP_ENV=production`, provide a stable `SECRET_KEY` and configured admin credentials, and use HTTPS. The app now rejects missing production configuration and forces secure session cookies in production. This is a configuration safeguard, not a complete production deployment review.
+For production, set `APP_ENV=production`, provide a stable `SECRET_KEY` and configured admin credentials, and use HTTPS. The app now rejects missing production configuration and forces secure session cookies in production. This is a configuration safeguard, not a complete production deployment review. See [HTTPS/SSL-TLS setup and verification](docs/HTTPS_AND_SSL.md). The TLS badge reflects the latest manually triggered check only; it does not prove a certificate is active until a real deployed public URL has been checked.
 
 ## Run tests
 
@@ -74,7 +76,7 @@ The `/admin/subscriptions` page supports creating plans and recording admin-appr
 
 ## Remaining work and release gates
 
-The complete prioritized backlog is in [docs/REMAINING_CAPABILITIES.md](docs/REMAINING_CAPABILITIES.md), with tracking issue [#3](https://github.com/hijaz7861/ai-edu-platform/issues/3).
+The prioritized implementation backlog is tracked in [issue #3](https://github.com/hijaz7861/ai-edu-platform/issues/3). SSL/TLS deployment and certificate verification steps are documented in [docs/HTTPS_AND_SSL.md](docs/HTTPS_AND_SSL.md).
 
 The most important outstanding work is:
 1. Persistent identities and complete server-side RBAC.
