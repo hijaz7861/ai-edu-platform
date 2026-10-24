@@ -21,7 +21,8 @@ This is the implementation backlog for taking the AI Education Platform from its
 
 ## P1 — AI providers and education workflows
 
-- [ ] Implement and contract-test real provider adapters for the chosen Gemini and Mistral APIs plus the OpenAI-compatible interface.
+- [x] Add native Gemini REST adapter, registry integration, explicit provider selection, and controlled-response/route-selection tests (64 tests passed in CI run [40099716796](https://github.com/hijaz7861/ai-edu-platform/actions/runs/40099716796) on commit `29c65fab061812ad66bb83d016d0eb921894c651`). This does not verify live credentials, quotas, or network access.
+- [ ] Complete live provider contract tests and verify Mistral Agent/OpenAI-compatible provider behavior against configured sandbox accounts.
 - [ ] Add provider configuration UI/API with encrypted-at-rest secrets, redaction, validation, rotation, revocation, model/capability allowlists, timeouts, quotas, and cost controls.
 - [ ] Test provider selection, fallback, quota/rate-limit responses, malformed outputs, timeouts, and provider unavailability without exposing credentials.
 - [ ] Replace deterministic question-generation stubs with actual provider-backed generation; retain explicit offline mode and never label a stub as a real model.
