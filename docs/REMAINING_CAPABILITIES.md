@@ -37,11 +37,11 @@ This is the implementation backlog for taking the AI Education Platform from its
 
 ## P1 — Connected Systems
 
-- [ ] Implement an admin Connected Systems registry and lifecycle management (register, verify, pause, rotate, revoke, delete).
-- [ ] Authenticate service-to-service requests and enforce tenant-bound scopes on every connector action.
-- [ ] Protect connector secrets; never return secret values in API responses or logs.
-- [ ] Implement health checks, capability discovery, timeouts, bounded retries, idempotency, audit records, and a global kill switch.
-- [ ] Enforce outbound host/IP allowlists and SSRF defenses, including redirects, DNS rebinding, private/link-local addresses, and metadata endpoints.
+- [x] Add Connected Systems admin UI and registry/lifecycle API; CI run [40101441115](https://github.com/hijaz7861/ai-edu-platform/actions/runs/40101441115) passed 92 tests on commit `a0ff387ecfd5a3e12bc491404f35842f1b5836ea`. No live external system has been connected.
+- [ ] Authenticate service-to-service actions and enforce tenant-bound scopes on every connector operation.
+- [x] Store only credential environment-variable references, never raw secret values; list/API responses expose only whether a credential is configured.
+- [x] Implement HTTPS host allowlisting, DNS/IP validation and pinning, private-IP blocking by default, redirect blocking, bounded health responses, health status and audit events; CI run [40101441115](https://github.com/hijaz7861/ai-edu-platform/actions/runs/40101441115) passed 92 tests.
+- [ ] Add bounded retries for connector actions, idempotency, a global kill switch, encrypted per-tenant secrets, and signed/idempotent webhooks.
 - [ ] Verify signed webhooks with timestamp/replay protection and idempotent event handling.
 - [ ] Add a staging connection test against one separately deployed system before enabling production connectors.
 - [ ] Implement a ChatGPT-facing MCP/app integration as a separate authenticated component; a ChatGPT account is not an API credential.
