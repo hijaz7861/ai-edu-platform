@@ -22,22 +22,9 @@ load_dotenv()
 app = Flask(__name__)
 app.register_blueprint(dashboard_api)
 
-_secret = os.environ.get("SECRET_KEY")
-if not _secret:
-    _secret = secrets.token_hex(32)
-    app.logger.warning(
-        "SECRET_KEY unset; using a temporary development key."
-    )
+from services.security_config import configure_security
 
-app.secret_key = _secret
-app.config.update(
-    SESSION_COOKIE_HTTPONLY=True,
-    SESSION_COOKIE_SAMESITE="Lax",
-    SESSION_COOKIE_SECURE=os.environ.get("COOKIE_SECURE", "0") == "1",
-    MAX_CONTENT_LENGTH=int(
-        os.environ.get("MAX_CONTENT_LENGTH", str(25 * 1024 * 1024))
-    ),
-)
+configure_security(app)
 
 
 def _csrf_token():
