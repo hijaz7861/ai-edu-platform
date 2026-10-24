@@ -1,6 +1,6 @@
 # AI Education Platform — Runnable Reference Implementation
 
-[![CI](https://github.com/hijaz7861/ai-edu-platform/actions/workflows/platform-ci.yml/badge.svg?branch=main)](https://github.com/hijaz7861/ai-edu-platform/actions/workflows/platform-ci.yml) [![TLS Certificate Check](https://github.com/hijaz7861/ai-edu-platform/actions/workflows/tls-check.yml/badge.svg)](https://github.com/hijaz7861/ai-edu-platform/actions/workflows/tls-check.yml) [![Python 3.13](https://img.shields.io/badge/python-3.13-blue.svg)](https://www.python.org/downloads/release/python-3130/)
+[![CI](https://github.com/hijaz7861/ai-edu-platform/actions/workflows/platform-ci.yml/badge.svg?branch=main)](https://github.com/hijaz7861/ai-edu-platform/actions/workflows/platform-ci.yml) [![TLS Certificate Check](https://github.com/hijaz7861/ai-edu-platform/actions/workflows/tls-check.yml/badge.svg)](https://github.com/hijaz7861/ai-edu-platform/actions/workflows/tls-check.yml) [![Dependency Audit](https://github.com/hijaz7861/ai-edu-platform/actions/workflows/security-audit.yml/badge.svg)](https://github.com/hijaz7861/ai-edu-platform/actions/workflows/security-audit.yml) [![Python 3.13](https://img.shields.io/badge/python-3.13-blue.svg)](https://www.python.org/downloads/release/python-3130/)
 
 A runnable Flask/SQLite reference implementation for education workflows and the foundation of a multi-tenant SaaS. It is **not yet a complete or production-ready education SaaS**. Read the status table below before relying on any capability.
 
@@ -40,6 +40,8 @@ Latest verified CI for commit `b2f86a4b5b739a9c5155b8fb3a7271f7dfc4d622`:
 CI evidence: [GitHub Actions run 40101527706](https://github.com/hijaz7861/ai-edu-platform/actions/runs/40101527706). Connected Systems tests use controlled DNS/network responses; no real external system was contacted. Gemini tests use controlled responses, not a live Gemini account/quota/network transaction. Entitlement gates currently cover class access, attendance, AI generation, question-bank analysis, and exam generation; complete coverage of every route/background job and trusted user-to-tenant binding is still outstanding.
 
 The public TLS certificate checker and its URL/expiry/private-address tests were added after that CI run. A workflow run for the latest checker commit has not yet been found; the TLS status badge must not be read as a verified live certificate until the workflow is run against the actual deployed public URL.
+
+The scheduled dependency audit is now configured in `.github/workflows/security-audit.yml`. The first audit found known vulnerabilities in Pillow 12.1.1; the dependency has been upgraded to Pillow 13.0.0 and the follow-up audit is pending. The audit badge reports workflow state, not a guarantee that every dependency is vulnerability-free.
 
 ## Capability status
 
