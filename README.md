@@ -26,7 +26,7 @@ For production, set `APP_ENV=production`, provide a stable `SECRET_KEY` and conf
 python3 -m pytest -q
 ```
 
-Latest verified CI for commit `a0ff387ecfd5a3e12bc491404f35842f1b5836ea`:
+Latest verified CI for commit `b2f86a4b5b739a9c5155b8fb3a7271f7dfc4d622`:
 - 92 tests passed.
 - Python syntax audit passed.
 - Production configuration check passed.
@@ -35,7 +35,7 @@ Latest verified CI for commit `a0ff387ecfd5a3e12bc491404f35842f1b5836ea`:
 - Login throttling, security-header, and API rate-limit tests cover the documented controls.
 - Connected Systems tests cover HTTPS/host allowlisting, private-IP rejection, environment-referenced credentials, bounded health responses, audit events, lifecycle transitions, and admin API/page behavior.
 
-CI evidence: [GitHub Actions run 40101441115](https://github.com/hijaz7861/ai-edu-platform/actions/runs/40101441115). Connected Systems tests use controlled DNS/network responses; no real external system was contacted. Gemini tests use controlled responses, not a live Gemini account/quota/network transaction. Entitlement gates currently cover class access, attendance, AI generation, question-bank analysis, and exam generation; complete coverage of every route/background job and trusted user-to-tenant binding is still outstanding.
+CI evidence: [GitHub Actions run 40101527706](https://github.com/hijaz7861/ai-edu-platform/actions/runs/40101527706). Connected Systems tests use controlled DNS/network responses; no real external system was contacted. Gemini tests use controlled responses, not a live Gemini account/quota/network transaction. Entitlement gates currently cover class access, attendance, AI generation, question-bank analysis, and exam generation; complete coverage of every route/background job and trusted user-to-tenant binding is still outstanding.
 
 ## Capability status
 
