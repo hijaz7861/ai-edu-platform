@@ -290,11 +290,69 @@ CREATE TABLE IF NOT EXISTS acceptance_criteria_checks (
     id TEXT PRIMARY KEY, criteria_number INTEGER, criteria_description TEXT, status TEXT DEFAULT 'not_started',
     evidence_ref TEXT, verified_by TEXT, verified_at TEXT
 );
+
+-- SaaS commercial foundation: plans and institution subscriptions.
+-- Entitlements are explicit JSON feature flags; free access is an admin-granted subscription,
+-- not a separate bypass around subscription checks.
+CREATE TABLE IF NOT EXISTS platform_plans (
+    id TEXT PRIMARY KEY,
+    code TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    price_minor INTEGER NOT NULL DEFAULT 0 CHECK (price_minor >= 0),
+    currency TEXT NOT NULL DEFAULT 'USD',
+    billing_interval TEXT NOT NULL DEFAULT 'monthly'
+        CHECK (billing_interval IN ('monthly', 'yearly', 'none')),
+    entitlements_json TEXT NOT NULL DEFAULT '{}',
+    is_public INTEGER NOT NULL DEFAULT 1 CHECK (is_public IN (0, 1)),
+    is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS institution_subscriptions (
+    id TEXT PRIMARY KEY,
+    institution_id TEXT NOT NULL REFERENCES institutions(id),
+    plan_id TEXT NOT NULL REFERENCES platform_plans(id),
+    status TEXT NOT NULL DEFAULT 'active'
+        CHECK (status IN ('trialing', 'active', 'past_due', 'suspended', 'cancelled', 'expired')),
+    access_type TEXT NOT NULL DEFAULT 'paid'
+        CHECK (access_type IN ('paid', 'free_grant', 'trial')),
+    starts_at TEXT NOT NULL,
+    ends_at TEXT,
+    granted_by TEXT,
+    grant_reason TEXT,
+    external_customer_ref TEXT,
+    external_subscription_ref TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK (ends_at IS NULL OR ends_at > starts_at)
+);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_institution_status
+    ON institution_subscriptions(institution_id, status, starts_at, ends_at);
+CREATE TABLE IF NOT EXISTS subscription_events (
+    id TEXT PRIMARY KEY,
+    subscription_id TEXT NOT NULL REFERENCES institution_subscriptions(id),
+    institution_id TEXT NOT NULL REFERENCES institutions(id),
+    event_type TEXT NOT NULL,
+    actor_id TEXT,
+    reason TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_subscription_events_institution
+    ON subscription_events(institution_id, created_at);
+
 """
 
 
 def get_connection(db_path: str = None) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path or DB_PATH)
+    path = db_path or DB_PATH
+    # A clean checkout / CI runner may not have the runtime storage directory yet.
+    # Create only the parent directory; never create it for SQLite's special :memory: path.
+    if path != ":memory:":
+        parent = os.path.dirname(os.path.abspath(path))
+        os.makedirs(parent, exist_ok=True)
+    conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
