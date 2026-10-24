@@ -88,3 +88,17 @@ def test_gemini_normalizes_model_prefix_and_clamps_confidence(monkeypatch):
         lambda instruction, payload: {"intent": "unknown", "confidence": 3.5},
     )
     assert provider.parse_command("do something") == {"intent": "other", "confidence": 1.0}
+
+
+def test_default_registry_registers_gemini_when_configured(monkeypatch):
+    for name in ("MISTRAL_API_KEY", "MISTRAL_AGENT_ID", "AI_API_KEY", "AI_BASE_URL", "AI_MODEL"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-3-flash-preview")
+
+    from providers.base import get_default_registry
+
+    registry = get_default_registry()
+    assert "gemini-native" in registry
+    assert registry["gemini-native"].health_check() == "available"
+    assert "stub-offline-v1" in registry
