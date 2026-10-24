@@ -25,13 +25,16 @@ def is_locked(conn, key_hash: str, *, now=None) -> bool:
     ).fetchone()
     if row is None:
         return False
+    locked_until = row["locked_until"]
+    # An active lock must outlive the rolling failure window when the fifth
+    # attempt occurs near the end of that window.
+    if locked_until and _parse(locked_until) > moment:
+        return True
     window_start = _parse(row["window_started_at"])
     if moment >= window_start + timedelta(seconds=WINDOW_SECONDS):
         conn.execute("DELETE FROM login_rate_limits WHERE key_hash = ?", (key_hash,))
         conn.commit()
-        return False
-    locked_until = row["locked_until"]
-    return bool(locked_until and _parse(locked_until) > moment)
+    return False
 
 
 def record_failure(conn, key_hash: str, *, now=None) -> bool:
