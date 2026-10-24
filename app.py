@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 from flask import Flask, request, jsonify, g, abort, redirect, render_template, session, url_for
 from db import init_db, get_connection, DB_PATH
 from services import core, attendance, questions, exams, performance, governance
+from services.licensing import feature_allowed
 from providers.base import get_default_registry
 from dashboard_api import dashboard_api
 
@@ -177,6 +178,25 @@ def err(message, code=400):
     return jsonify({"error": message}), code
 
 
+def _require_feature_access(institution_id, feature):
+    """Enforce commercial feature access in production or explicit test/staging mode.
+
+    Development stays usable without seeded plans. Production fails closed and
+    requires an institution-scoped active subscription with the feature enabled.
+    """
+    enforcement_enabled = (
+        os.environ.get("APP_ENV", "").strip().lower() == "production"
+        or os.environ.get("ENFORCE_ENTITLEMENTS", "0") == "1"
+    )
+    if not enforcement_enabled:
+        return None
+    if not isinstance(institution_id, str) or not institution_id.strip():
+        return err("institution_id_required", 400)
+    if not feature_allowed(get_db(), institution_id.strip(), feature):
+        return err("subscription_required", 403)
+    return None
+
+
 @app.get("/health")
 def health():
     return jsonify({"status": "ok"})
@@ -204,6 +224,9 @@ def create_institution():
 def create_class(institution_id):
     conn = get_db()
     body = request.get_json(silent=True) or {}
+    access_error = _require_feature_access(institution_id, "class_management")
+    if access_error:
+        return access_error
     campus_id = body.get("campus_id") or core.create_campus(conn, institution_id, "Main Campus", f"{institution_id}-MAIN")
     cid = core.create_class(conn, institution_id, campus_id, body["name"], body.get("academic_year", "2026-2027"))
     return jsonify({"id": cid}), 201
@@ -212,6 +235,9 @@ def create_class(institution_id):
 @app.get("/institutions/<institution_id>/classes")
 def list_classes(institution_id):
     conn = get_db()
+    access_error = _require_feature_access(institution_id, "class_management")
+    if access_error:
+        return access_error
     rows = core.scoped_query(conn, "classes", institution_id)
     return jsonify([dict(r) for r in rows])
 
@@ -222,6 +248,9 @@ def list_classes(institution_id):
 def teacher_check_in(teacher_id):
     conn = get_db()
     body = request.get_json(silent=True) or {}
+    access_error = _require_feature_access(body.get("institution_id"), "attendance")
+    if access_error:
+        return access_error
     try:
         event_id, status = attendance.check_in(
             conn, teacher_id, body["institution_id"], body["policy_id"], body["time"], method=body.get("method", "manual")
@@ -235,6 +264,9 @@ def teacher_check_in(teacher_id):
 def teacher_check_out(teacher_id):
     conn = get_db()
     body = request.get_json(silent=True) or {}
+    access_error = _require_feature_access(body.get("institution_id"), "attendance")
+    if access_error:
+        return access_error
     try:
         event_id, status = attendance.check_out(
             conn, teacher_id, body["institution_id"], body["policy_id"], body["time"], method=body.get("method", "manual")
@@ -262,6 +294,10 @@ def generate_question():
         return err("unsupported question_type", 400)
     if difficulty not in {"easy", "medium", "hard"}:
         return err("unsupported difficulty", 400)
+
+    access_error = _require_feature_access(body.get("institution_id"), "ai_generation")
+    if access_error:
+        return access_error
 
     registry = get_default_registry()
     preferred_provider = os.environ.get("AI_PROVIDER", "").strip()
@@ -298,6 +334,14 @@ def generate_question():
 @app.post("/question-banks/<bank_id>/duplicates")
 def find_duplicates(bank_id):
     conn = get_db()
+    bank = conn.execute(
+        "SELECT institution_id FROM question_banks WHERE id = ?", (bank_id,)
+    ).fetchone()
+    if not bank:
+        return err("question_bank_not_found", 404)
+    access_error = _require_feature_access(bank["institution_id"], "question_bank_analysis")
+    if access_error:
+        return access_error
     flags = questions.find_duplicates(conn, bank_id)
     return jsonify({"flags": flags})
 
@@ -305,6 +349,14 @@ def find_duplicates(bank_id):
 @app.post("/question-banks/<bank_id>/coverage-gaps")
 def coverage_gaps(bank_id):
     conn = get_db()
+    bank = conn.execute(
+        "SELECT institution_id FROM question_banks WHERE id = ?", (bank_id,)
+    ).fetchone()
+    if not bank:
+        return err("question_bank_not_found", 404)
+    access_error = _require_feature_access(bank["institution_id"], "question_bank_analysis")
+    if access_error:
+        return access_error
     result = questions.analyze_coverage_gaps(conn, bank_id)
     return jsonify(result)
 
@@ -315,6 +367,14 @@ def coverage_gaps(bank_id):
 def generate_exam(blueprint_id):
     conn = get_db()
     body = request.get_json(silent=True) or {}
+    blueprint = conn.execute(
+        "SELECT institution_id FROM exam_blueprints WHERE id = ?", (blueprint_id,)
+    ).fetchone()
+    if not blueprint:
+        return err("exam_blueprint_not_found", 404)
+    access_error = _require_feature_access(blueprint["institution_id"], "exam_generation")
+    if access_error:
+        return access_error
     try:
         exam_id, shortfalls = exams.generate_exam(
             conn, blueprint_id, version_label=body.get("version_label", "A"),
