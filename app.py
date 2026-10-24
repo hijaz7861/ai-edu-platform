@@ -17,6 +17,7 @@ from db import init_db, get_connection, DB_PATH
 from services import core, attendance, questions, exams, performance, governance
 from services.licensing import feature_allowed
 from services.login_throttle import clear_failures, is_locked, record_failure
+from services.api_rate_limit import allow_request
 from providers.base import get_default_registry
 from dashboard_api import dashboard_api
 
@@ -74,6 +75,16 @@ def _login_rate_key(username):
     return hmac.new(str(app.secret_key).encode("utf-8"), message, hashlib.sha256).hexdigest()
 
 
+def _api_rate_key():
+    # Use a keyed digest of the client address and Flask endpoint, not raw IP data.
+    identity = (request.remote_addr or "") + "|" + (request.endpoint or request.path)
+    return hmac.new(
+        str(app.secret_key).encode("utf-8"),
+        ("api|" + identity).encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
 _PROTECTED_API_PREFIXES = (
     "/api/questions/",
     "/institutions",
@@ -98,10 +109,23 @@ def enforce_api_security():
     # for isolated demos; it must never expose plan/subscription administration.
     is_admin_api = request.path.startswith("/api/admin/")
     legacy_mode = os.environ.get("REQUIRE_API_AUTH", "1") != "1"
-    if legacy_mode and not is_admin_api:
+    if not request.path.startswith(_PROTECTED_API_PREFIXES):
         return None
 
-    if not request.path.startswith(_PROTECTED_API_PREFIXES):
+    rate_limit_enabled = (
+        os.environ.get("APP_ENV", "").strip().lower() == "production"
+        or os.environ.get("API_RATE_LIMIT_ENABLED", "0") == "1"
+    )
+    if rate_limit_enabled and not allow_request(
+        get_db(),
+        _api_rate_key(),
+        limit=int(app.config.get("API_RATE_LIMIT_PER_MINUTE", 120)),
+    ):
+        response = jsonify({"error": "rate_limit_exceeded"})
+        response.headers["Retry-After"] = "60"
+        return response, 429
+
+    if legacy_mode and not is_admin_api:
         return None
 
     if not session.get("user"):
