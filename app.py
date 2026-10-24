@@ -264,10 +264,22 @@ def generate_question():
         return err("unsupported difficulty", 400)
 
     registry = get_default_registry()
-    provider = registry.get("mistral-agent")
-
-    if provider is None:
-        provider = registry.get("openai-compatible")
+    preferred_provider = os.environ.get("AI_PROVIDER", "").strip()
+    if preferred_provider:
+        provider = registry.get(preferred_provider)
+        if provider is None:
+            return err("configured AI_PROVIDER is unavailable or not configured", 503)
+    else:
+        # Prefer explicitly configured real providers. The offline stub is used
+        # only when AI_PROVIDER=stub-offline-v1 is selected intentionally.
+        provider = next(
+            (
+                registry[name]
+                for name in ("mistral-agent", "gemini-native", "openai-compatible")
+                if name in registry
+            ),
+            None,
+        )
 
     if provider is None:
         return err("AI provider is not configured", 503)
