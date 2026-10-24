@@ -14,7 +14,7 @@ import secrets
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify, g, abort, redirect, render_template, session, url_for
 from db import init_db, get_connection, DB_PATH
-from services import core, attendance, questions, exams, performance, governance
+from services import core, attendance, questions, exams, performance, governance, connected_systems
 from services.licensing import feature_allowed
 from services.login_throttle import clear_failures, is_locked, record_failure
 from services.api_rate_limit import allow_request
@@ -500,6 +500,82 @@ def select_provider():
     if not provider:
         return err("no available provider for this capability", 503)
     return jsonify(dict(provider))
+
+
+def _connected_system_host_allowlist():
+    return [
+        host.strip().lower()
+        for host in os.environ.get("CONNECTED_SYSTEM_ALLOWED_HOSTS", "").split(",")
+        if host.strip()
+    ]
+
+
+def _connected_system_allow_private():
+    return os.environ.get("CONNECTED_SYSTEM_ALLOW_PRIVATE", "0") == "1"
+
+
+@app.get("/api/admin/connected-systems")
+def list_connected_systems():
+    return jsonify({"systems": connected_systems.list_systems(get_db())})
+
+
+@app.post("/api/admin/connected-systems")
+def register_connected_system():
+    body = request.get_json(silent=True) or {}
+    try:
+        system_id = connected_systems.create_system(
+            get_db(),
+            name=body.get("name"),
+            base_url=body.get("base_url"),
+            auth_env_var=body.get("auth_env_var"),
+            institution_id=body.get("institution_id"),
+            scopes=body.get("scopes", []),
+            created_by=session.get("user", ""),
+            allowed_hosts=_connected_system_host_allowlist(),
+            allow_private=_connected_system_allow_private(),
+        )
+    except ValueError as exc:
+        message = str(exc)
+        status = 404 if message == "institution_not_found" else 400
+        return err(message, status)
+    return jsonify({"id": system_id, "status": "registered"}), 201
+
+
+@app.post("/api/admin/connected-systems/<system_id>/test")
+def test_connected_system(system_id):
+    try:
+        result = connected_systems.test_connection(
+            get_db(),
+            system_id,
+            actor_id=session.get("user", ""),
+            allowed_hosts=_connected_system_host_allowlist(),
+            allow_private=_connected_system_allow_private(),
+        )
+    except ValueError as exc:
+        message = str(exc)
+        status = 404 if message == "connected_system_not_found" else 409 if "not_testable" in message else 400
+        return err(message, status)
+    except RuntimeError as exc:
+        return err(str(exc), 502)
+    return jsonify(result)
+
+
+@app.post("/api/admin/connected-systems/<system_id>/status")
+def change_connected_system_status(system_id):
+    body = request.get_json(silent=True) or {}
+    try:
+        status = connected_systems.change_status(
+            get_db(),
+            system_id,
+            status=body.get("status"),
+            actor_id=session.get("user", ""),
+            reason=body.get("reason", ""),
+        )
+    except ValueError as exc:
+        message = str(exc)
+        code = 404 if message == "connected_system_not_found" else 409 if "health_check_required" in message or "terminal" in message or "unchanged" in message else 400
+        return err(message, code)
+    return jsonify({"id": system_id, "status": status})
 
 
 if __name__ == "__main__":
