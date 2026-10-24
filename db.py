@@ -290,11 +290,114 @@ CREATE TABLE IF NOT EXISTS acceptance_criteria_checks (
     id TEXT PRIMARY KEY, criteria_number INTEGER, criteria_description TEXT, status TEXT DEFAULT 'not_started',
     evidence_ref TEXT, verified_by TEXT, verified_at TEXT
 );
+
+-- SaaS commercial foundation: plans and institution subscriptions.
+-- Entitlements are explicit JSON feature flags; free access is an admin-granted subscription,
+-- not a separate bypass around subscription checks.
+CREATE TABLE IF NOT EXISTS platform_plans (
+    id TEXT PRIMARY KEY,
+    code TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    price_minor INTEGER NOT NULL DEFAULT 0 CHECK (price_minor >= 0),
+    currency TEXT NOT NULL DEFAULT 'USD',
+    billing_interval TEXT NOT NULL DEFAULT 'monthly'
+        CHECK (billing_interval IN ('monthly', 'yearly', 'none')),
+    entitlements_json TEXT NOT NULL DEFAULT '{}',
+    is_public INTEGER NOT NULL DEFAULT 1 CHECK (is_public IN (0, 1)),
+    is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS institution_subscriptions (
+    id TEXT PRIMARY KEY,
+    institution_id TEXT NOT NULL REFERENCES institutions(id),
+    plan_id TEXT NOT NULL REFERENCES platform_plans(id),
+    status TEXT NOT NULL DEFAULT 'active'
+        CHECK (status IN ('trialing', 'active', 'past_due', 'suspended', 'cancelled', 'expired')),
+    access_type TEXT NOT NULL DEFAULT 'paid'
+        CHECK (access_type IN ('paid', 'free_grant', 'trial')),
+    starts_at TEXT NOT NULL,
+    ends_at TEXT,
+    granted_by TEXT,
+    grant_reason TEXT,
+    external_customer_ref TEXT,
+    external_subscription_ref TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK (ends_at IS NULL OR ends_at > starts_at)
+);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_institution_status
+    ON institution_subscriptions(institution_id, status, starts_at, ends_at);
+CREATE TABLE IF NOT EXISTS subscription_events (
+    id TEXT PRIMARY KEY,
+    subscription_id TEXT NOT NULL REFERENCES institution_subscriptions(id),
+    institution_id TEXT NOT NULL REFERENCES institutions(id),
+    event_type TEXT NOT NULL,
+    actor_id TEXT,
+    reason TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_subscription_events_institution
+    ON subscription_events(institution_id, created_at);
+
+-- Persistent login throttling; key_hash is an HMAC, never a raw username/IP/password.
+CREATE TABLE IF NOT EXISTS login_rate_limits (
+    key_hash TEXT PRIMARY KEY,
+    failures INTEGER NOT NULL DEFAULT 0,
+    window_started_at TEXT NOT NULL,
+    locked_until TEXT,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS api_rate_limits (
+    key_hash TEXT PRIMARY KEY,
+    request_count INTEGER NOT NULL DEFAULT 0,
+    window_started_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_api_rate_limits_window
+    ON api_rate_limits(window_started_at);
+
+-- Connected Systems registry stores metadata and environment-variable references only.
+CREATE TABLE IF NOT EXISTS connected_systems (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    base_url TEXT NOT NULL,
+    auth_env_var TEXT,
+    institution_id TEXT REFERENCES institutions(id),
+    scopes_json TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'registered'
+        CHECK (status IN ('registered', 'active', 'paused', 'revoked')),
+    last_health_status TEXT,
+    last_health_at TEXT,
+    last_error_code TEXT,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_connected_systems_tenant_status
+    ON connected_systems(institution_id, status);
+CREATE TABLE IF NOT EXISTS connected_system_events (
+    id TEXT PRIMARY KEY,
+    system_id TEXT NOT NULL REFERENCES connected_systems(id),
+    actor_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    detail_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+
 """
 
 
 def get_connection(db_path: str = None) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path or DB_PATH)
+    path = db_path or DB_PATH
+    # A clean checkout / CI runner may not have the runtime storage directory yet.
+    # Create only the parent directory; never create it for SQLite's special :memory: path.
+    if path != ":memory:":
+        parent = os.path.dirname(os.path.abspath(path))
+        os.makedirs(parent, exist_ok=True)
+    conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn

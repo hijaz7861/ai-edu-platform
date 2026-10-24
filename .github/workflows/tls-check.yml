@@ -1,0 +1,31 @@
+name: TLS Certificate Check
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: "Public HTTPS URL of the deployed service (for example https://service.onrender.com/health)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  verify-tls:
+    name: Verify public TLS certificate
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Verify certificate and hostname
+        env:
+          TARGET_URL: ${{ inputs.target_url }}
+        run: python tools/check_tls.py "$TARGET_URL" --timeout 10 --warn-days 30

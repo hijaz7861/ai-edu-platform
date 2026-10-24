@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Subscriptions & Access · AI Education Platform</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    :root{--ink:#15243b;--muted:#6b7890;--line:#e5eaf2;--paper:#f4f7fb;--brand:#3457d5;--navy:#101d35}
+    body{background:var(--paper);color:var(--ink);font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+    .topbar{background:var(--navy);color:white;border-bottom:1px solid #263652}
+    .brand-mark{display:grid;place-items:center;width:38px;height:38px;border-radius:12px;background:linear-gradient(135deg,#6c8cff,#3457d5);font-weight:800}
+    .eyebrow{font-size:.72rem;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:#7890c9}
+    .hero{background:linear-gradient(115deg,#142543,#253f78);color:#fff;border-radius:22px;padding:28px;box-shadow:0 14px 35px #172b4d18}
+    .panel{background:#fff;border:1px solid var(--line);border-radius:18px;box-shadow:0 5px 18px #15243b06}
+    .panel h2{font-size:1rem;font-weight:750;letter-spacing:-.02em}
+    .form-label{font-size:.82rem;font-weight:650;color:#42516a}
+    .form-control,.form-select{border-color:#dce3ef;border-radius:10px;padding:.7rem .8rem}
+    .form-control:focus,.form-select:focus{border-color:#8299ff;box-shadow:0 0 0 .2rem #3457d51c}
+    .btn{border-radius:10px;font-weight:650;padding:.65rem .9rem}
+    .btn-primary{background:var(--brand);border-color:var(--brand)}
+    .table>:not(caption)>*>*{padding:.85rem .7rem;border-bottom-color:#edf0f6;vertical-align:middle}
+    .table thead th{font-size:.72rem;text-transform:uppercase;letter-spacing:.07em;color:#7b879a;font-weight:750}
+    .pill{border-radius:999px;padding:.32rem .6rem;font-size:.72rem;font-weight:750;background:#edf2ff;color:#3457d5}
+    .muted{color:var(--muted)} .small-note{font-size:.8rem;color:var(--muted)}
+    .feature-examples{font-size:.78rem;background:#f5f7fc;border:1px solid #e7ebf5;border-radius:10px;padding:10px;color:#52617b}
+    #toast{position:sticky;top:12px;z-index:10}
+    @media(max-width:575px){.hero{padding:21px}.hero h1{font-size:1.55rem}}
+  </style>
+</head>
+<body>
+<header class="topbar py-3">
+  <div class="container-fluid px-3 px-lg-4 d-flex align-items-center justify-content-between gap-3">
+    <div class="d-flex align-items-center gap-3"><div class="brand-mark">A</div><div><div class="fw-bold">AI Education Platform</div><div class="small text-white-50">Platform administration</div></div></div>
+    <div class="d-flex align-items-center gap-3"><span class="small text-white-50 d-none d-sm-inline">Signed in as {{ username }}</span><a class="btn btn-sm btn-outline-light" href="/">Dashboard</a></div>
+  </div>
+</header>
+<main class="container-fluid px-3 px-lg-4 py-4 py-lg-5" style="max-width:1600px">
+  <div id="toast" class="mb-3" role="status" aria-live="polite"></div>
+  <section class="hero mb-4 mb-lg-5">
+    <div class="row align-items-center g-4">
+      <div class="col-lg-8"><div class="eyebrow mb-2">Commercial access control</div><h1 class="h2 fw-bold mb-2">Plans, subscriptions & free access</h1><p class="mb-0 text-white-50">Create service tiers, grant approved schools free access, and keep every access decision auditable.</p></div>
+      <div class="col-lg-4"><div class="row g-2"><div class="col-6"><div class="rounded-3 p-3 h-100" style="background:#ffffff12"><div class="small text-white-50">Plans configured</div><div class="fs-3 fw-bold" id="plan-count">—</div></div></div><div class="col-6"><div class="rounded-3 p-3 h-100" style="background:#ffffff12"><div class="small text-white-50">Access records</div><div class="fs-3 fw-bold" id="sub-count">—</div></div></div></div></div>
+    </div>
+  </section>
+  <div class="row g-4 mb-4">
+    <div class="col-12 col-xl-5">
+      <section class="panel p-4 h-100">
+        <div class="d-flex align-items-start justify-content-between mb-3"><div><div class="eyebrow mb-1">01 · Service catalog</div><h2 class="mb-1">Create a plan</h2><p class="small-note mb-0">Enter the amount in minor currency units (for example, 1000 = USD 10.00).</p></div><span class="pill">PLAN SETUP</span></div>
+        <form id="plan-form">
+          <div class="row g-3">
+            <div class="col-12 col-md-6"><label class="form-label" for="plan-code">Plan code</label><input class="form-control" id="plan-code" required maxlength="60" placeholder="community-free"></div>
+            <div class="col-12 col-md-6"><label class="form-label" for="plan-name">Display name</label><input class="form-control" id="plan-name" required maxlength="120" placeholder="Community Access"></div>
+            <div class="col-12"><label class="form-label" for="plan-description">Description</label><input class="form-control" id="plan-description" placeholder="For approved community schools"></div>
+            <div class="col-6"><label class="form-label" for="plan-price">Price (minor units; 1000 = $10.00)</label><input type="number" min="0" step="1" class="form-control" id="plan-price" value="0" required></div>
+            <div class="col-6"><label class="form-label" for="plan-currency">Currency</label><select class="form-select" id="plan-currency"><option>USD</option><option>EUR</option><option>GBP</option><option>PKR</option></select></div>
+            <div class="col-12"><label class="form-label" for="plan-interval">Billing interval</label><select class="form-select" id="plan-interval"><option value="none">No billing (free / manually granted)</option><option value="monthly">Monthly</option><option value="yearly">Yearly</option></select></div>
+            <div class="col-12"><label class="form-label" for="plan-entitlements">Feature access (JSON)</label><textarea class="form-control font-monospace" id="plan-entitlements" rows="4" required>{"attendance": true, "reports": true, "ai_generation": false}</textarea><div class="small-note mt-2">Only features explicitly set to true are enabled. Unknown features default to denied.</div></div>
+            <div class="col-12"><button class="btn btn-primary w-100" type="submit">Create plan</button></div>
+          </div>
+        </form>
+      </section>
+    </div>
+    <div class="col-12 col-xl-7">
+      <section class="panel p-4 h-100">
+        <div class="d-flex align-items-start justify-content-between mb-3"><div><div class="eyebrow mb-1">02 · Admin decision</div><h2 class="mb-1">Grant school access</h2><p class="small-note mb-0">Free access is a recorded grant with an admin, reason and optional expiry.</p></div><span class="pill">FREE OR PAID PLAN</span></div>
+        <form id="grant-form">
+          <div class="row g-3">
+            <div class="col-12 col-md-6"><label class="form-label" for="grant-school">School / institution</label><select class="form-select" id="grant-school" required><option value="">Loading institutions…</option></select></div>
+            <div class="col-12 col-md-6"><label class="form-label" for="grant-plan">Plan</label><select class="form-select" id="grant-plan" required><option value="">Create a plan first</option></select></div>
+            <div class="col-12 col-md-6"><label class="form-label" for="grant-type">Access type</label><select class="form-select" id="grant-type"><option value="free_grant">Free — admin approved</option><option value="paid">Paid subscription (manual record)</option><option value="trial">Trial access</option></select></div>
+            <div class="col-12 col-md-6"><label class="form-label" for="grant-expiry">Optional expiry date (UTC)</label><input type="date" class="form-control" id="grant-expiry"><div class="small-note mt-1">Leave blank for no automatic expiry.</div></div>
+            <div class="col-12"><label class="form-label" for="grant-reason">Reason / approval note</label><textarea class="form-control" id="grant-reason" rows="2" required maxlength="1000" placeholder="Approved by platform admin for the 2026–27 community program"></textarea></div>
+            <div class="col-12"><button class="btn btn-primary w-100" type="submit">Grant access & record audit event</button></div>
+          </div>
+        </form>
+        <div class="feature-examples mt-3"><strong>Important:</strong> This records access only. It does not charge a card or verify a payment. A payment gateway and verified server-side webhooks must be integrated before accepting real online payments.</div>
+      </section>
+    </div>
+  </div>
+  <section class="panel p-3 p-lg-4 mb-4">
+    <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3"><div><div class="eyebrow mb-1">03 · Service catalog</div><h2 class="mb-0">Available plans</h2></div><button class="btn btn-outline-secondary btn-sm" id="refresh">Refresh data</button></div>
+    <div class="table-responsive"><table class="table mb-0"><thead><tr><th>Plan</th><th>Price</th><th>Billing</th><th>Feature entitlements</th><th>Status</th></tr></thead><tbody id="plans-body"><tr><td colspan="5" class="muted">Loading plans…</td></tr></tbody></table></div>
+  </section>
+  <section class="panel p-3 p-lg-4">
+    <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3"><div><div class="eyebrow mb-1">04 · Audit trail</div><h2 class="mb-0">School access records</h2></div><span class="small-note">Most recent 500 records</span></div>
+    <div class="table-responsive"><table class="table mb-0"><thead><tr><th>School</th><th>Plan</th><th>Access</th><th>Status</th><th>Expires</th><th>Granted by</th><th>Reason</th><th>Action</th></tr></thead><tbody id="subs-body"><tr><td colspan="8" class="muted">Loading subscriptions…</td></tr></tbody></table></div>
+  </section>
+  <p class="small-note mt-4 mb-0">Access control foundation · Subscription and status changes are logged. Feature enforcement must also be applied at every protected business endpoint before commercial production.</p>
+</main>
+<script>
+const csrf = {{ csrf_token()|tojson }};
+const headers = {"Content-Type":"application/json","X-CSRF-Token":csrf};
+const $ = id => document.getElementById(id);
+function esc(v){return String(v ?? "").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
+function message(text, ok=false){$("toast").innerHTML='<div class="alert '+(ok?'alert-success':'alert-danger')+' py-2 mb-0">'+esc(text)+'</div>';window.setTimeout(()=>{$("toast").innerHTML=""},5000);}
+async function api(path,options={}){const r=await fetch(path,{credentials:"same-origin",...options});let data={};try{data=await r.json()}catch{}if(!r.ok)throw new Error(data.error||('Request failed ('+r.status+')'));return data;}
+function price(p){try{return new Intl.NumberFormat(undefined,{style:'currency',currency:p.currency}).format(p.price_minor/100);}catch{return (p.price_minor/100).toFixed(2)+' '+p.currency;}}
+async function load(){
+ try{
+  const [plans,subs,schools]=await Promise.all([api('/api/admin/plans'),api('/api/admin/subscriptions'),api('/api/institutions')]);
+  $("plan-count").textContent=plans.plans.length;$("sub-count").textContent=subs.subscriptions.length;
+  $("plans-body").innerHTML=plans.plans.length?plans.plans.map(p=>'<tr><td><strong>'+esc(p.name)+'</strong><div class="small-note">'+esc(p.code)+' · '+esc(p.description)+'</div></td><td>'+esc(price(p))+'</td><td>'+esc(p.billing_interval)+'</td><td><code>'+esc(p.entitlements_json)+'</code></td><td><span class="pill">'+(p.is_active?'Active':'Inactive')+'</span></td></tr>').join(''):'<tr><td colspan="5" class="muted">No plans yet. Create your first plan above.</td></tr>';
+  const selectedPlan=$("grant-plan").value;
+  $("grant-plan").innerHTML='<option value="">Choose a plan</option>'+plans.plans.filter(p=>p.is_active).map(p=>'<option value="'+esc(p.id)+'">'+esc(p.name)+' ('+esc(p.code)+')</option>').join('');
+  if(selectedPlan)$("grant-plan").value=selectedPlan;
+  const selectedSchool=$("grant-school").value;
+  $("grant-school").innerHTML='<option value="">Choose a school</option>'+schools.institutions.map(s=>'<option value="'+esc(s.id)+'">'+esc(s.name)+' · '+esc(s.code)+'</option>').join('');
+  if(selectedSchool)$("grant-school").value=selectedSchool;
+  $("subs-body").innerHTML=subs.subscriptions.length?subs.subscriptions.map(s=>'<tr><td><strong>'+esc(s.institution_name)+'</strong><div class="small-note">'+esc(s.institution_code)+'</div></td><td>'+esc(s.plan_name)+'</td><td>'+esc(s.access_type)+'</td><td><span class="pill">'+esc(s.status)+'</span></td><td>'+esc(s.ends_at||'No expiry')+'</td><td>'+esc(s.granted_by)+'</td><td>'+esc(s.grant_reason)+'</td><td>'+(s.status==='active'?'<button class="btn btn-sm btn-outline-danger" data-suspend="'+esc(s.id)+'">Suspend</button>':'<span class="small-note">—</span>')+'</td></tr>').join(''):'<tr><td colspan="8" class="muted">No subscription records yet.</td></tr>';
+ }catch(e){message(e.message);}
+}
+$("plan-form").addEventListener("submit",async e=>{e.preventDefault();try{let entitlements=JSON.parse($("plan-entitlements").value);if(!entitlements||Array.isArray(entitlements)||typeof entitlements!=="object")throw new Error("Feature access must be a JSON object.");await api('/api/admin/plans',{method:'POST',headers,body:JSON.stringify({code:$("plan-code").value,name:$("plan-name").value,description:$("plan-description").value,price_minor:Number($("plan-price").value),currency:$("plan-currency").value,billing_interval:$("plan-interval").value,entitlements})});e.target.reset();$("plan-price").value="0";$("plan-entitlements").value='{"attendance": true, "reports": true, "ai_generation": false}';message("Plan created.",true);await load();}catch(err){message(err.message);}});
+$("grant-form").addEventListener("submit",async e=>{e.preventDefault();try{const expiry=$("grant-expiry").value;const ends_at=expiry?expiry+'T23:59:59+00:00':null;await api('/api/admin/subscriptions/grant',{method:'POST',headers,body:JSON.stringify({institution_id:$("grant-school").value,plan_id:$("grant-plan").value,access_type:$("grant-type").value,reason:$("grant-reason").value,ends_at})});$("grant-reason").value="";$("grant-expiry").value="";message("Access grant recorded.",true);await load();}catch(err){message(err.message);}});
+$("refresh").addEventListener("click",load);
+$("subs-body").addEventListener("click",async e=>{const id=e.target.dataset.suspend;if(!id)return;const reason=prompt("Reason for suspending this subscription:");if(!reason||!reason.trim())return;try{await api('/api/admin/subscriptions/'+encodeURIComponent(id)+'/status',{method:'POST',headers,body:JSON.stringify({status:'suspended',reason})});message("Subscription suspended and audit event recorded.",true);await load();}catch(err){message(err.message);}});
+load();
+</script>
+</body>
+</html>

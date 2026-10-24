@@ -92,6 +92,16 @@ def get_default_registry():
         )
         registry[provider.name] = provider
 
+    gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if gemini_key:
+        from providers.gemini import GeminiProvider
+
+        provider = GeminiProvider(
+            api_key=gemini_key,
+            model=os.environ.get("GEMINI_MODEL", "gemini-3-flash-preview"),
+        )
+        registry[provider.name] = provider
+
     api_key = os.environ.get("AI_API_KEY", "").strip()
     base_url = os.environ.get("AI_BASE_URL", "").strip()
     model = os.environ.get("AI_MODEL", "").strip()

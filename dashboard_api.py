@@ -1,5 +1,8 @@
-from flask import Blueprint, jsonify, g
+import json
+import sqlite3
+from flask import Blueprint, jsonify, g, request, session
 from db import get_connection, DB_PATH
+from services.licensing import create_plan, grant_subscription, change_subscription_status
 
 dashboard_api = Blueprint("dashboard_api", __name__)
 
@@ -81,3 +84,83 @@ def list_approval_gates():
         "FROM approval_gates ORDER BY created_at DESC LIMIT 200"
     ).fetchall()
     return jsonify({"approval_gates": [dict(r) for r in rows]})
+
+
+@dashboard_api.get("/api/admin/plans")
+def admin_list_plans():
+    rows = _connection().execute(
+        """SELECT id, code, name, description, price_minor, currency,
+                  billing_interval, entitlements_json, is_public, is_active
+           FROM platform_plans ORDER BY price_minor, name"""
+    ).fetchall()
+    return jsonify({"plans": [dict(r) for r in rows]})
+
+
+@dashboard_api.post("/api/admin/plans")
+def admin_create_plan():
+    body = request.get_json(silent=True) or {}
+    try:
+        plan_id = create_plan(
+            _connection(),
+            code=body.get("code", ""),
+            name=body.get("name", ""),
+            description=body.get("description", ""),
+            price_minor=body.get("price_minor", 0),
+            currency=body.get("currency", "USD"),
+            billing_interval=body.get("billing_interval", "monthly"),
+            entitlements=body.get("entitlements", {}),
+            is_public=body.get("is_public", True),
+        )
+    except (ValueError, TypeError) as exc:
+        return jsonify({"error": str(exc)}), 400
+    except sqlite3.IntegrityError:
+        return jsonify({"error": "plan code already exists"}), 409
+    return jsonify({"plan_id": plan_id}), 201
+
+
+@dashboard_api.get("/api/admin/subscriptions")
+def admin_list_subscriptions():
+    rows = _connection().execute(
+        """SELECT s.id, s.institution_id, i.name AS institution_name, i.code AS institution_code,
+                  s.plan_id, p.code AS plan_code, p.name AS plan_name, s.status, s.access_type,
+                  s.starts_at, s.ends_at, s.granted_by, s.grant_reason, s.created_at
+           FROM institution_subscriptions s
+           JOIN institutions i ON i.id = s.institution_id
+           JOIN platform_plans p ON p.id = s.plan_id
+           ORDER BY s.created_at DESC LIMIT 500"""
+    ).fetchall()
+    return jsonify({"subscriptions": [dict(r) for r in rows]})
+
+
+@dashboard_api.post("/api/admin/subscriptions/grant")
+def admin_grant_subscription():
+    body = request.get_json(silent=True) or {}
+    try:
+        subscription_id = grant_subscription(
+            _connection(),
+            institution_id=body.get("institution_id", ""),
+            plan_id=body.get("plan_id", ""),
+            access_type=body.get("access_type", "free_grant"),
+            granted_by=session.get("user", ""),
+            reason=body.get("reason", ""),
+            starts_at=body.get("starts_at"),
+            ends_at=body.get("ends_at"),
+        )
+    except (ValueError, TypeError) as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"subscription_id": subscription_id}), 201
+
+
+@dashboard_api.post("/api/admin/subscriptions/<subscription_id>/status")
+def admin_update_subscription_status(subscription_id):
+    body = request.get_json(silent=True) or {}
+    try:
+        change_subscription_status(
+            _connection(), subscription_id,
+            status=body.get("status", ""),
+            actor_id=session.get("user", ""),
+            reason=body.get("reason", ""),
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"status": "updated"}), 200
