@@ -26,16 +26,17 @@ For production, set `APP_ENV=production`, provide a stable `SECRET_KEY` and conf
 python3 -m pytest -q
 ```
 
-Latest verified CI for commit `09f2676104ba459b440f527d0aacc1905acd16ca`:
-- 74 tests passed.
+Latest verified CI for commit `0869359ab92f188fb6762e44001a22dc21724095`:
+- 82 tests passed.
 - Python syntax audit passed.
 - Production configuration check passed.
 - Gemini adapter tests cover request format, key-header placement, response parsing, sanitized HTTP errors, registry configuration, and route-level provider selection.
 - Entitlement tests cover production fail-closed behavior for missing institution IDs and missing subscriptions on gated routes.
 - Login throttling tests cover five failed attempts, persistence, reset, and the full cooldown duration.
 - Security-header tests cover MIME sniffing, framing, referrer policy, permissions policy, opener isolation, and no-store on sensitive pages.
+- API rate-limit tests cover the fixed window, 429 response/Retry-After, configuration validation, and bounded persistent state.
 
-CI evidence: [GitHub Actions run 40100321674](https://github.com/hijaz7861/ai-edu-platform/actions/runs/40100321674). Gemini tests use controlled responses, not a live Gemini account/quota/network transaction. Entitlement gates currently cover class access, attendance, AI generation, question-bank analysis, and exam generation; complete coverage of every route/background job and trusted user-to-tenant binding is still outstanding.
+CI evidence: [GitHub Actions run 40100618345](https://github.com/hijaz7861/ai-edu-platform/actions/runs/40100618345). Gemini tests use controlled responses, not a live Gemini account/quota/network transaction. Entitlement gates currently cover class access, attendance, AI generation, question-bank analysis, and exam generation; complete coverage of every route/background job and trusted user-to-tenant binding is still outstanding.
 
 ## Capability status
 
@@ -64,7 +65,7 @@ CI evidence: [GitHub Actions run 40100321674](https://github.com/hijaz7861/ai-ed
 
 ## API security notes
 
-Business API routes require a signed-in session and CSRF protection by default (`REQUIRE_API_AUTH=1`). Production automatically enforces subscription feature gates on education routes; set `ENFORCE_ENTITLEMENTS=1` to exercise those gates in staging. Browser-session JSON mutations must send the session CSRF token using `X-CSRF-Token`. Admin subscription APIs remain protected even if legacy demo mode is explicitly enabled. Do not disable authentication on a network-exposed server.
+Business API routes require a signed-in session and CSRF protection by default (`REQUIRE_API_AUTH=1`). Production automatically applies per-client/per-endpoint API rate limits and subscription feature gates on education routes; set `API_RATE_LIMIT_ENABLED=1` and `ENFORCE_ENTITLEMENTS=1` to exercise those controls in staging. The default configured API limit is 120 requests per endpoint/client per minute. Browser-session JSON mutations must send the session CSRF token using `X-CSRF-Token`. Admin subscription APIs remain protected even if legacy demo mode is explicitly enabled. Do not disable authentication on a network-exposed server.
 
 The current login is a **single configured platform-admin account**. Do not treat that as complete RBAC or as a school-user login system.
 
