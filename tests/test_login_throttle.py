@@ -52,3 +52,32 @@ def test_successful_login_can_clear_failure_state(conn):
     assert conn.execute(
         "SELECT 1 FROM login_rate_limits WHERE key_hash = ?", (key,)
     ).fetchone() is None
+
+
+def test_login_route_returns_429_after_five_bad_passwords(monkeypatch):
+    import app as app_module
+
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("ADMIN_USERNAME", "configured-throttle-admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "test-only-correct-password")
+    monkeypatch.setenv("REQUIRE_API_AUTH", "1")
+    app_module.app.config.update(TESTING=True)
+    username = "unknown-" + __import__("uuid").uuid4().hex
+
+    with app_module.app.test_client() as client:
+        client.get("/")
+        with client.session_transaction() as session:
+            csrf = session["csrf_token"]
+        statuses = []
+        for _ in range(5):
+            response = client.post(
+                "/auth/login",
+                data={
+                    "username": username,
+                    "password": "incorrect-password",
+                    "csrf_token": csrf,
+                },
+            )
+            statuses.append(response.status_code)
+
+    assert statuses == [401, 401, 401, 401, 429]
