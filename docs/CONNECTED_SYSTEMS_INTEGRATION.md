@@ -2,7 +2,9 @@
 
 ## Status
 
-This document defines the target design and acceptance criteria for connecting other products built by the same owner or approved third parties to AI Edu Platform. It does not claim that a working integration UI, connector runtime, OAuth flow, or production API credentials are already implemented.
+**Partially implemented; not production-complete.** On the PR #1 branch, the platform now has a platform-admin Connected Systems page and registry API for register/list, health check, and pause/activate/revoke transitions. The registry stores environment-variable names rather than raw credentials, requires exact HTTPS host allowlisting, validates and pins resolved IP addresses, blocks private IPs by default and never follows redirects. CI run [40101527706](https://github.com/hijaz7861/ai-edu-platform/actions/runs/40101527706) passed 92 tests on commit `b2f86a4b5b739a9c5155b8fb3a7271f7dfc4d622`.
+
+This is only the registry and health-check slice. No real external system has been connected. OAuth/OIDC, actual scoped connector actions, tenant-bound authorization, encrypted per-tenant secrets, signed webhooks, durable retries/idempotency, capability discovery, and a global kill switch are not implemented. The remainder of this document defines the target design and acceptance criteria for those missing parts.
 
 ## Product requirement
 
@@ -88,11 +90,12 @@ Secrets belong in a dedicated secret store or encrypted-at-rest secret table wit
 
 ## Implementation sequence
 
-1. Add database schema/migrations and server-side connector registry.
-2. Add authenticated, permission-checked admin APIs and a basic Connected Systems page.
-3. Implement a single HTTPS REST connector with health check, secret handling, scoped requests, timeouts, and audit events.
-4. Add signed webhooks and durable idempotent event processing.
-5. Connect the first separately deployed internal system in staging; define a versioned contract and run isolation/security tests.
-6. Add OAuth/MCP or additional protocol adapters only when a concrete system requires them.
+1. [Implemented foundation] Add registry tables, platform-admin API, basic Connected Systems page, and lifecycle/audit events.
+2. [Implemented foundation] Add allowlisted HTTPS health checks with DNS/IP validation and pinning, default private-IP blocking, no redirects, and bounded responses.
+3. Implement a real scoped REST connector action contract with tenant-bound authorization and environment/managed secret handling.
+4. Add encrypted per-tenant credentials and safe rotation/revocation semantics; current environment-variable references are only an initial secret-management boundary.
+5. Add signed webhooks and durable idempotent event processing, retries, observability, and a global kill switch.
+6. Connect the first separately deployed internal system in staging; define a versioned contract and run isolation/security tests.
+7. Add OAuth/MCP or additional protocol adapters only when a concrete system requires them.
 
-Keep this work in review until the UI, API, secret storage, network protections, and tests are implemented. A registered URL or green health check is not proof that the integration is secure or production-ready.
+Keep this work in review until connector actions, tenant authorization, secret management, webhook handling, and staging integration tests are implemented. A registered URL or green health check is not proof that the integration is secure or production-ready.
