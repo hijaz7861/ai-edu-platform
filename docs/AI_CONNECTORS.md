@@ -17,8 +17,8 @@ The platform should support interchangeable AI providers without coupling educat
 - The `AIProvider` contract and deterministic offline stub exist.
 - A generic OpenAI-compatible chat-completions adapter exists.
 - A Mistral Agent API adapter exists and requires both `MISTRAL_API_KEY` and `MISTRAL_AGENT_ID`.
-- The current question-generation route chooses Mistral Agent first, then the configured OpenAI-compatible provider. This is not yet a user-facing provider selector or a complete capability-aware failover router.
-- Gemini may be usable through a vendor-supported OpenAI-compatible endpoint, but that endpoint and model must be configured and tested against the exact request format. No native Gemini adapter or verified Gemini live call is claimed here.
+- The question-generation route supports an explicit `AI_PROVIDER` choice. If unset, it chooses the first configured real provider in this order: Mistral Agent, native Gemini, then OpenAI-compatible. The offline stub is used only when explicitly selected. This is not yet a user-facing provider-management UI or a complete capability-aware failover router.
+- A native Gemini REST adapter now exists in `providers/gemini.py`, configured with `GEMINI_API_KEY` and `GEMINI_MODEL`. Adapter, registry, error-handling, and route-selection tests passed in CI run [40099716796](https://github.com/hijaz7861/ai-edu-platform/actions/runs/40099716796) on commit `29c65fab061812ad66bb83d016d0eb921894c651`. These tests use controlled transport responses; no live Gemini account/quota/network call has been verified.
 - A ChatGPT-facing MCP server, OAuth/identity hand-off, per-school connector settings, encrypted per-tenant secrets, connector management UI, usage metering, budget limits, retries/circuit breakers, and live provider contract tests remain to be implemented and verified.
 
 ## Required design for a production connector manager
