@@ -350,6 +350,12 @@ CREATE TABLE IF NOT EXISTS login_rate_limits (
     locked_until TEXT,
     updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS api_rate_limits (
+    key_hash TEXT PRIMARY KEY,
+    request_count INTEGER NOT NULL DEFAULT 0,
+    window_started_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 
 """
 
