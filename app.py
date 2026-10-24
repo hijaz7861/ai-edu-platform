@@ -84,8 +84,11 @@ _PROTECTED_API_PREFIXES = (
 
 @app.before_request
 def enforce_api_security():
-    # Enabled by default. Set REQUIRE_API_AUTH=0 only for isolated legacy demos.
-    if os.environ.get("REQUIRE_API_AUTH", "1") != "1":
+    # Admin APIs are always protected. Legacy mode only relaxes non-admin APIs
+    # for isolated demos; it must never expose plan/subscription administration.
+    is_admin_api = request.path.startswith("/api/admin/")
+    legacy_mode = os.environ.get("REQUIRE_API_AUTH", "1") != "1"
+    if legacy_mode and not is_admin_api:
         return None
 
     if not request.path.startswith(_PROTECTED_API_PREFIXES):
