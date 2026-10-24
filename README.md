@@ -26,14 +26,16 @@ For production, set `APP_ENV=production`, provide a stable `SECRET_KEY` and conf
 python3 -m pytest -q
 ```
 
-Latest verified CI for commit `900af7ccaf3c2ca9a79b7e0850d6f01f8a765da0`:
-- 68 tests passed.
+Latest verified CI for commit `09f2676104ba459b440f527d0aacc1905acd16ca`:
+- 74 tests passed.
 - Python syntax audit passed.
 - Production configuration check passed.
 - Gemini adapter tests cover request format, key-header placement, response parsing, sanitized HTTP errors, registry configuration, and route-level provider selection.
 - Entitlement tests cover production fail-closed behavior for missing institution IDs and missing subscriptions on gated routes.
+- Login throttling tests cover five failed attempts, persistence, reset, and the full cooldown duration.
+- Security-header tests cover MIME sniffing, framing, referrer policy, permissions policy, opener isolation, and no-store on sensitive pages.
 
-CI evidence: [GitHub Actions run 40099977782](https://github.com/hijaz7861/ai-edu-platform/actions/runs/40099977782). This verifies the adapter against controlled test responses, not a live Gemini account, quota, or network transaction. Entitlement gates currently cover class access, attendance, AI generation, question-bank analysis, and exam generation; complete coverage of every route/background job and trusted user-to-tenant binding is still outstanding.
+CI evidence: [GitHub Actions run 40100321674](https://github.com/hijaz7861/ai-edu-platform/actions/runs/40100321674). Gemini tests use controlled responses, not a live Gemini account/quota/network transaction. Entitlement gates currently cover class access, attendance, AI generation, question-bank analysis, and exam generation; complete coverage of every route/background job and trusted user-to-tenant binding is still outstanding.
 
 ## Capability status
 
@@ -52,7 +54,7 @@ CI evidence: [GitHub Actions run 40099977782](https://github.com/hijaz7861/ai-ed
 | Performance tracking | Stored-answer/topic-performance service logic exists |
 | Notifications and voice/NLU | Real email/SMS/push delivery and full model-backed NLU are not complete |
 | Agent governance | Approval gates, audit redaction, retention, and provider selection foundations exist |
-| Login and sessions | One environment-configured platform-admin login with session/CSRF protections; no full multi-user identity system, recovery, or MFA |
+| Login and sessions | One environment-configured platform-admin login with session/CSRF protections, persistent per-username/IP failed-login throttling, baseline security headers, and no-store on sensitive pages; no full multi-user identity system, recovery, or MFA |
 | SaaS plans and school access | Subscription plan/grant/status foundation exists in PR #1; it does not process payments |
 | Entitlement enforcement | Production gates now protect class access, attendance, AI generation, question-bank analysis, and exam generation. Full route/background-job coverage and tenant identity binding remain outstanding |
 | Connected Systems | Architecture documented in PR #2; registry UI/runtime and live connector are not implemented |
