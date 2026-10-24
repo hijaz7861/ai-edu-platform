@@ -144,3 +144,18 @@ def test_security_headers_and_sensitive_page_cache_policy(client):
     assert response.headers["Permissions-Policy"] == "camera=(), microphone=(), geolocation=()"
     assert response.headers["Cross-Origin-Opener-Policy"] == "same-origin"
     assert response.headers["Cache-Control"] == "no-store"
+
+
+
+def test_authenticated_session_without_admin_role_is_denied(client):
+    with client.session_transaction() as sess:
+        sess["user"] = "not-an-admin"
+        sess.pop("role", None)
+
+    response = client.get("/providers/select")
+    assert response.status_code == 403
+    assert response.get_json()["error"] == "platform_admin_required"
+
+    response = client.get("/admin/subscriptions")
+    assert response.status_code == 403
+    assert response.get_json()["error"] == "platform_admin_required"
