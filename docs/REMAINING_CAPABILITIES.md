@@ -10,7 +10,8 @@ This is the implementation backlog for taking the AI Education Platform from its
 - [ ] Add an explicit platform-admin permission boundary and separate school administrators, teachers, students, reviewers, and service identities.
 - [ ] Fail closed when production secrets/configuration are missing; enforce secure cookies, trusted-host/proxy settings, request limits, and safe error responses.
 - [x] Add persistent failed-login throttling, baseline response security headers, and no-store policy on sensitive pages; CI run [40100321674](https://github.com/hijaz7861/ai-edu-platform/actions/runs/40100321674) passed 74 tests on commit `09f2676104ba459b440f527d0aacc1905acd16ca`.
-- [ ] Add general API rate limits, dependency audit, secret scanning, and an actionable security response process.
+- [x] Add a persistent per-client/per-endpoint API rate limiter with bounded state and 429/Retry-After responses; CI run [40100618345](https://github.com/hijaz7861/ai-edu-platform/actions/runs/40100618345) passed 82 tests on commit `0869359ab92f188fb6762e44001a22dc21724095`.
+- [ ] Add dependency audit, secret scanning, and an actionable security response process.
 - [ ] Add append-only security/audit events for privilege changes, connector actions, access grants, exports, and administrative decisions.
 
 ## P0 — Subscription and entitlement enforcement
