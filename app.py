@@ -30,6 +30,18 @@ from services.security_config import configure_security
 configure_security(app)
 
 
+@app.after_request
+def add_security_headers(response):
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+    if request.path == "/" or request.path.startswith(("/auth/", "/admin/", "/api/admin/")):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 def _csrf_token():
     token = session.get("csrf_token")
     if not token:
