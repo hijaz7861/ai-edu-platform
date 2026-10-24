@@ -8,6 +8,7 @@ in their own test suites — this app exposes a representative slice of each, no
 every endpoint from the Phase 8/9 API design docs, to keep this file readable.
 """
 import hmac
+import hashlib
 import os
 import secrets
 from dotenv import load_dotenv
@@ -15,6 +16,7 @@ from flask import Flask, request, jsonify, g, abort, redirect, render_template, 
 from db import init_db, get_connection, DB_PATH
 from services import core, attendance, questions, exams, performance, governance
 from services.licensing import feature_allowed
+from services.login_throttle import clear_failures, is_locked, record_failure
 from providers.base import get_default_registry
 from dashboard_api import dashboard_api
 
@@ -50,6 +52,14 @@ def _valid_csrf():
     return bool(
         supplied and expected and hmac.compare_digest(supplied, expected)
     )
+
+
+def _login_rate_key(username):
+    # Store only a keyed digest, not a raw username or client IP.
+    identity = str(username or "").strip().casefold()
+    address = request.remote_addr or ""
+    message = (identity + "|" + address).encode("utf-8")
+    return hmac.new(str(app.secret_key).encode("utf-8"), message, hashlib.sha256).hexdigest()
 
 
 _PROTECTED_API_PREFIXES = (
@@ -118,16 +128,26 @@ def login():
 
     username = request.form.get("username", "")
     password = request.form.get("password", "")
+    rate_key = _login_rate_key(username)
+    conn = get_db()
+
+    if is_locked(conn, rate_key):
+        return "Too many failed login attempts. Try again later.", 429
 
     if (
         hmac.compare_digest(username, configured_user)
         and hmac.compare_digest(password, configured_password)
     ):
+        clear_failures(conn, rate_key)
         session.clear()
         session["user"] = username
+        session["role"] = "platform_admin"
         session["csrf_token"] = secrets.token_urlsafe(32)
         return redirect(url_for("home"))
 
+    locked = record_failure(conn, rate_key)
+    if locked:
+        return "Too many failed login attempts. Try again later.", 429
     return "Invalid credentials. Please try again.", 401
 
 
