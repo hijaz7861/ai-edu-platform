@@ -26,8 +26,8 @@ For production, set `APP_ENV=production`, provide a stable `SECRET_KEY` and conf
 python3 -m pytest -q
 ```
 
-Latest verified CI for commit `0869359ab92f188fb6762e44001a22dc21724095`:
-- 82 tests passed.
+Latest verified CI for commit `6cbd355174e7085b606756ae06ab5b0a524894d1`:
+- 83 tests passed.
 - Python syntax audit passed.
 - Production configuration check passed.
 - Gemini adapter tests cover request format, key-header placement, response parsing, sanitized HTTP errors, registry configuration, and route-level provider selection.
@@ -35,8 +35,9 @@ Latest verified CI for commit `0869359ab92f188fb6762e44001a22dc21724095`:
 - Login throttling tests cover five failed attempts, persistence, reset, and the full cooldown duration.
 - Security-header tests cover MIME sniffing, framing, referrer policy, permissions policy, opener isolation, and no-store on sensitive pages.
 - API rate-limit tests cover the fixed window, 429 response/Retry-After, configuration validation, and bounded persistent state.
+- Authorization regression tests confirm sessions without the explicit platform-admin role cannot access protected APIs or subscription administration.
 
-CI evidence: [GitHub Actions run 40100618345](https://github.com/hijaz7861/ai-edu-platform/actions/runs/40100618345). Gemini tests use controlled responses, not a live Gemini account/quota/network transaction. Entitlement gates currently cover class access, attendance, AI generation, question-bank analysis, and exam generation; complete coverage of every route/background job and trusted user-to-tenant binding is still outstanding.
+CI evidence: [GitHub Actions run 40100803698](https://github.com/hijaz7861/ai-edu-platform/actions/runs/40100803698). Gemini tests use controlled responses, not a live Gemini account/quota/network transaction. Entitlement gates currently cover class access, attendance, AI generation, question-bank analysis, and exam generation; complete coverage of every route/background job and trusted user-to-tenant binding is still outstanding.
 
 ## Capability status
 
@@ -55,7 +56,7 @@ CI evidence: [GitHub Actions run 40100618345](https://github.com/hijaz7861/ai-ed
 | Performance tracking | Stored-answer/topic-performance service logic exists |
 | Notifications and voice/NLU | Real email/SMS/push delivery and full model-backed NLU are not complete |
 | Agent governance | Approval gates, audit redaction, retention, and provider selection foundations exist |
-| Login and sessions | One environment-configured platform-admin login with session/CSRF protections, persistent per-username/IP failed-login throttling, baseline security headers, and no-store on sensitive pages; no full multi-user identity system, recovery, or MFA |
+| Login and sessions | One environment-configured platform-admin login with session/CSRF protections, persistent per-username/IP failed-login throttling, baseline security headers, and no-store on sensitive pages; sessions without the explicit platform-admin role are denied protected routes. No full multi-user identity system, recovery, or MFA |
 | SaaS plans and school access | Subscription plan/grant/status foundation exists in PR #1; it does not process payments |
 | Entitlement enforcement | Production gates now protect class access, attendance, AI generation, question-bank analysis, and exam generation. Full route/background-job coverage and tenant identity binding remain outstanding |
 | Connected Systems | Architecture documented in PR #2; registry UI/runtime and live connector are not implemented |
