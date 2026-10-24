@@ -89,3 +89,21 @@ def test_legacy_api_mode_is_explicitly_configurable(client, monkeypatch):
     monkeypatch.setenv("REQUIRE_API_AUTH", "0")
     response = client.get("/providers/select")
     assert response.status_code == 200
+
+
+
+def test_admin_subscription_api_requires_login(client):
+    for path in ("/api/admin/plans", "/api/admin/subscriptions"):
+        response = client.get(path)
+        assert response.status_code == 401
+        assert response.get_json()["error"] == "authentication_required"
+
+
+def test_admin_subscription_mutations_require_csrf(client):
+    login(client)
+    response = client.post(
+        "/api/admin/plans",
+        json={"code": "unauthorized-write", "name": "Should Not Exist"},
+    )
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "csrf_invalid"
