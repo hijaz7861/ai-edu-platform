@@ -45,3 +45,10 @@ def test_invalid_request_size_is_rejected(value):
     env = {"MAX_CONTENT_LENGTH": value}
     with pytest.raises(RuntimeError, match="MAX_CONTENT_LENGTH"):
         configure_security(app, env)
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "10001", "not-a-number"])
+def test_invalid_api_rate_limit_is_rejected(value):
+    app = make_app()
+    with pytest.raises(RuntimeError, match="API_RATE_LIMIT_PER_MINUTE"):
+        configure_security(app, {"API_RATE_LIMIT_PER_MINUTE": value})
