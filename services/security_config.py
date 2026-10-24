@@ -36,11 +36,19 @@ def configure_security(app, environ=None):
     if max_content_length <= 0:
         raise RuntimeError("MAX_CONTENT_LENGTH must be a positive integer")
 
+    try:
+        api_rate_limit = int(env.get("API_RATE_LIMIT_PER_MINUTE", "120"))
+    except (TypeError, ValueError):
+        raise RuntimeError("API_RATE_LIMIT_PER_MINUTE must be an integer from 1 to 10000") from None
+    if not 1 <= api_rate_limit <= 10000:
+        raise RuntimeError("API_RATE_LIMIT_PER_MINUTE must be an integer from 1 to 10000")
+
     app.secret_key = secret
     app.config.update(
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
         SESSION_COOKIE_SECURE=production or str(env.get("COOKIE_SECURE", "0")) == "1",
         MAX_CONTENT_LENGTH=max_content_length,
+        API_RATE_LIMIT_PER_MINUTE=api_rate_limit,
     )
     return app.config
