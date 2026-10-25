@@ -89,3 +89,82 @@ def test_legacy_api_mode_is_explicitly_configurable(client, monkeypatch):
     monkeypatch.setenv("REQUIRE_API_AUTH", "0")
     response = client.get("/providers/select")
     assert response.status_code == 200
+
+
+def test_legacy_api_mode_cannot_bypass_auth_in_production(client, monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("REQUIRE_API_AUTH", "0")
+
+    response = client.get("/providers/select")
+    assert response.status_code == 401
+    assert response.get_json()["error"] == "authentication_required"
+
+
+
+def test_admin_subscription_api_requires_login(client):
+    for path in ("/api/admin/plans", "/api/admin/subscriptions"):
+        response = client.get(path)
+        assert response.status_code == 401
+        assert response.get_json()["error"] == "authentication_required"
+
+
+def test_admin_subscription_mutations_require_csrf(client):
+    login(client)
+    response = client.post(
+        "/api/admin/plans",
+        json={"code": "unauthorized-write", "name": "Should Not Exist"},
+    )
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "csrf_invalid"
+
+def test_admin_api_remains_protected_in_legacy_mode(client, monkeypatch):
+    monkeypatch.setenv("REQUIRE_API_AUTH", "0")
+
+    response = client.get("/api/admin/plans")
+    assert response.status_code == 401
+    assert response.get_json()["error"] == "authentication_required"
+
+    response = client.post(
+        "/api/admin/plans",
+        json={"code": "legacy-mode-write", "name": "Must Stay Protected"},
+    )
+    assert response.status_code == 401
+    assert response.get_json()["error"] == "authentication_required"
+
+
+def test_admin_api_still_requires_csrf_in_legacy_mode(client, monkeypatch):
+    monkeypatch.setenv("REQUIRE_API_AUTH", "0")
+    login(client)
+
+    response = client.post(
+        "/api/admin/plans",
+        json={"code": "missing-csrf-legacy", "name": "Must Stay Protected"},
+    )
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "csrf_invalid"
+
+
+
+def test_security_headers_and_sensitive_page_cache_policy(client):
+    response = client.get("/")
+    assert response.headers["X-Content-Type-Options"] == "nosniff"
+    assert response.headers["X-Frame-Options"] == "DENY"
+    assert response.headers["Referrer-Policy"] == "strict-origin-when-cross-origin"
+    assert response.headers["Permissions-Policy"] == "camera=(), microphone=(), geolocation=()"
+    assert response.headers["Cross-Origin-Opener-Policy"] == "same-origin"
+    assert response.headers["Cache-Control"] == "no-store"
+
+
+
+def test_authenticated_session_without_admin_role_is_denied(client):
+    with client.session_transaction() as sess:
+        sess["user"] = "not-an-admin"
+        sess.pop("role", None)
+
+    response = client.get("/providers/select")
+    assert response.status_code == 403
+    assert response.get_json()["error"] == "platform_admin_required"
+
+    response = client.get("/admin/subscriptions")
+    assert response.status_code == 403
+    assert response.get_json()["error"] == "platform_admin_required"

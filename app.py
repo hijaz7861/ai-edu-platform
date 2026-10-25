@@ -8,12 +8,16 @@ in their own test suites — this app exposes a representative slice of each, no
 every endpoint from the Phase 8/9 API design docs, to keep this file readable.
 """
 import hmac
+import hashlib
 import os
 import secrets
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify, g, abort, redirect, render_template, session, url_for
 from db import init_db, get_connection, DB_PATH
-from services import core, attendance, questions, exams, performance, governance
+from services import core, attendance, questions, exams, performance, governance, connected_systems
+from services.licensing import feature_allowed
+from services.login_throttle import clear_failures, is_locked, record_failure
+from services.api_rate_limit import allow_request
 from providers.base import get_default_registry
 from dashboard_api import dashboard_api
 
@@ -22,22 +26,21 @@ load_dotenv()
 app = Flask(__name__)
 app.register_blueprint(dashboard_api)
 
-_secret = os.environ.get("SECRET_KEY")
-if not _secret:
-    _secret = secrets.token_hex(32)
-    app.logger.warning(
-        "SECRET_KEY unset; using a temporary development key."
-    )
+from services.security_config import configure_security
 
-app.secret_key = _secret
-app.config.update(
-    SESSION_COOKIE_HTTPONLY=True,
-    SESSION_COOKIE_SAMESITE="Lax",
-    SESSION_COOKIE_SECURE=os.environ.get("COOKIE_SECURE", "0") == "1",
-    MAX_CONTENT_LENGTH=int(
-        os.environ.get("MAX_CONTENT_LENGTH", str(25 * 1024 * 1024))
-    ),
-)
+configure_security(app)
+
+
+@app.after_request
+def add_security_headers(response):
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+    if request.path == "/" or request.path.startswith(("/auth/", "/admin/", "/api/admin/")):
+        response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 def _csrf_token():
@@ -64,6 +67,24 @@ def _valid_csrf():
     )
 
 
+def _login_rate_key(username):
+    # Store only a keyed digest, not a raw username or client IP.
+    identity = str(username or "").strip().casefold()
+    address = request.remote_addr or ""
+    message = (identity + "|" + address).encode("utf-8")
+    return hmac.new(str(app.secret_key).encode("utf-8"), message, hashlib.sha256).hexdigest()
+
+
+def _api_rate_key():
+    # Use a keyed digest of the client address and Flask endpoint, not raw IP data.
+    identity = (request.remote_addr or "") + "|" + (request.endpoint or request.path)
+    return hmac.new(
+        str(app.secret_key).encode("utf-8"),
+        ("api|" + identity).encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
 _PROTECTED_API_PREFIXES = (
     "/api/questions/",
     "/institutions",
@@ -78,16 +99,39 @@ _PROTECTED_API_PREFIXES = (
     "/api/classes",
     "/api/question-banks",
     "/api/exams",
-    "/api/approval-gates",)
+    "/api/approval-gates",
+    "/api/admin/",)
 
 
 @app.before_request
 def enforce_api_security():
-    # Enabled by default. Set REQUIRE_API_AUTH=0 only for isolated legacy demos.
-    if os.environ.get("REQUIRE_API_AUTH", "1") != "1":
+    # Admin APIs are always protected. Legacy mode only relaxes non-admin APIs
+    # for isolated demos; it must never expose plan/subscription administration.
+    is_admin_api = request.path.startswith("/api/admin/")
+    production_mode = os.environ.get("APP_ENV", "").strip().lower() == "production"
+    legacy_mode = (not production_mode) and os.environ.get("REQUIRE_API_AUTH", "1").strip() != "1"
+    if not request.path.startswith(_PROTECTED_API_PREFIXES):
         return None
 
-    if not request.path.startswith(_PROTECTED_API_PREFIXES):
+    rate_limit_enabled = (
+        os.environ.get("APP_ENV", "").strip().lower() == "production"
+        or os.environ.get("API_RATE_LIMIT_ENABLED", "0") == "1"
+    )
+    if rate_limit_enabled and not allow_request(
+        get_db(),
+        _api_rate_key(),
+        limit=int(app.config.get("API_RATE_LIMIT_PER_MINUTE", 120)),
+    ):
+        response = jsonify({"error": "rate_limit_exceeded"})
+        response.headers["Retry-After"] = "60"
+        return response, 429
+
+    if session.get("user") and session.get("role") != "platform_admin":
+        # Until school-user login and route-level RBAC are implemented, fail
+        # closed rather than treating any authenticated session as an admin.
+        return jsonify({"error": "platform_admin_required"}), 403
+
+    if legacy_mode and not is_admin_api:
         return None
 
     if not session.get("user"):
@@ -98,6 +142,24 @@ def enforce_api_security():
             return jsonify({"error": "csrf_invalid"}), 400
 
     return None
+
+
+@app.get("/admin/subscriptions")
+def admin_subscriptions_page():
+    if not session.get("user"):
+        return redirect(url_for("home"))
+    if session.get("role") != "platform_admin":
+        return jsonify({"error": "platform_admin_required"}), 403
+    return render_template("subscriptions.html", username=session["user"])
+
+
+@app.get("/admin/connected-systems")
+def connected_systems_admin_page():
+    if not session.get("user"):
+        return redirect(url_for("home"))
+    if session.get("role") != "platform_admin":
+        return jsonify({"error": "platform_admin_required"}), 403
+    return render_template("connected_systems.html", username=session["user"])
 
 
 @app.route("/", methods=["GET"])
@@ -119,16 +181,26 @@ def login():
 
     username = request.form.get("username", "")
     password = request.form.get("password", "")
+    rate_key = _login_rate_key(username)
+    conn = get_db()
+
+    if is_locked(conn, rate_key):
+        return "Too many failed login attempts. Try again later.", 429
 
     if (
         hmac.compare_digest(username, configured_user)
         and hmac.compare_digest(password, configured_password)
     ):
+        clear_failures(conn, rate_key)
         session.clear()
         session["user"] = username
+        session["role"] = "platform_admin"
         session["csrf_token"] = secrets.token_urlsafe(32)
         return redirect(url_for("home"))
 
+    locked = record_failure(conn, rate_key)
+    if locked:
+        return "Too many failed login attempts. Try again later.", 429
     return "Invalid credentials. Please try again.", 401
 
 
@@ -179,6 +251,25 @@ def err(message, code=400):
     return jsonify({"error": message}), code
 
 
+def _require_feature_access(institution_id, feature):
+    """Enforce commercial feature access in production or explicit test/staging mode.
+
+    Development stays usable without seeded plans. Production fails closed and
+    requires an institution-scoped active subscription with the feature enabled.
+    """
+    enforcement_enabled = (
+        os.environ.get("APP_ENV", "").strip().lower() == "production"
+        or os.environ.get("ENFORCE_ENTITLEMENTS", "0") == "1"
+    )
+    if not enforcement_enabled:
+        return None
+    if not isinstance(institution_id, str) or not institution_id.strip():
+        return err("institution_id_required", 400)
+    if not feature_allowed(get_db(), institution_id.strip(), feature):
+        return err("subscription_required", 403)
+    return None
+
+
 @app.get("/health")
 def health():
     return jsonify({"status": "ok"})
@@ -206,6 +297,9 @@ def create_institution():
 def create_class(institution_id):
     conn = get_db()
     body = request.get_json(silent=True) or {}
+    access_error = _require_feature_access(institution_id, "class_management")
+    if access_error:
+        return access_error
     campus_id = body.get("campus_id") or core.create_campus(conn, institution_id, "Main Campus", f"{institution_id}-MAIN")
     cid = core.create_class(conn, institution_id, campus_id, body["name"], body.get("academic_year", "2026-2027"))
     return jsonify({"id": cid}), 201
@@ -214,6 +308,9 @@ def create_class(institution_id):
 @app.get("/institutions/<institution_id>/classes")
 def list_classes(institution_id):
     conn = get_db()
+    access_error = _require_feature_access(institution_id, "class_management")
+    if access_error:
+        return access_error
     rows = core.scoped_query(conn, "classes", institution_id)
     return jsonify([dict(r) for r in rows])
 
@@ -224,6 +321,9 @@ def list_classes(institution_id):
 def teacher_check_in(teacher_id):
     conn = get_db()
     body = request.get_json(silent=True) or {}
+    access_error = _require_feature_access(body.get("institution_id"), "attendance")
+    if access_error:
+        return access_error
     try:
         event_id, status = attendance.check_in(
             conn, teacher_id, body["institution_id"], body["policy_id"], body["time"], method=body.get("method", "manual")
@@ -237,6 +337,9 @@ def teacher_check_in(teacher_id):
 def teacher_check_out(teacher_id):
     conn = get_db()
     body = request.get_json(silent=True) or {}
+    access_error = _require_feature_access(body.get("institution_id"), "attendance")
+    if access_error:
+        return access_error
     try:
         event_id, status = attendance.check_out(
             conn, teacher_id, body["institution_id"], body["policy_id"], body["time"], method=body.get("method", "manual")
@@ -265,11 +368,27 @@ def generate_question():
     if difficulty not in {"easy", "medium", "hard"}:
         return err("unsupported difficulty", 400)
 
-    registry = get_default_registry()
-    provider = registry.get("mistral-agent")
+    access_error = _require_feature_access(body.get("institution_id"), "ai_generation")
+    if access_error:
+        return access_error
 
-    if provider is None:
-        provider = registry.get("openai-compatible")
+    registry = get_default_registry()
+    preferred_provider = os.environ.get("AI_PROVIDER", "").strip()
+    if preferred_provider:
+        provider = registry.get(preferred_provider)
+        if provider is None:
+            return err("configured AI_PROVIDER is unavailable or not configured", 503)
+    else:
+        # Prefer explicitly configured real providers. The offline stub is used
+        # only when AI_PROVIDER=stub-offline-v1 is selected intentionally.
+        provider = next(
+            (
+                registry[name]
+                for name in ("mistral-agent", "gemini-native", "openai-compatible")
+                if name in registry
+            ),
+            None,
+        )
 
     if provider is None:
         return err("AI provider is not configured", 503)
@@ -288,6 +407,14 @@ def generate_question():
 @app.post("/question-banks/<bank_id>/duplicates")
 def find_duplicates(bank_id):
     conn = get_db()
+    bank = conn.execute(
+        "SELECT institution_id FROM question_banks WHERE id = ?", (bank_id,)
+    ).fetchone()
+    if not bank:
+        return err("question_bank_not_found", 404)
+    access_error = _require_feature_access(bank["institution_id"], "question_bank_analysis")
+    if access_error:
+        return access_error
     flags = questions.find_duplicates(conn, bank_id)
     return jsonify({"flags": flags})
 
@@ -295,6 +422,14 @@ def find_duplicates(bank_id):
 @app.post("/question-banks/<bank_id>/coverage-gaps")
 def coverage_gaps(bank_id):
     conn = get_db()
+    bank = conn.execute(
+        "SELECT institution_id FROM question_banks WHERE id = ?", (bank_id,)
+    ).fetchone()
+    if not bank:
+        return err("question_bank_not_found", 404)
+    access_error = _require_feature_access(bank["institution_id"], "question_bank_analysis")
+    if access_error:
+        return access_error
     result = questions.analyze_coverage_gaps(conn, bank_id)
     return jsonify(result)
 
@@ -305,6 +440,14 @@ def coverage_gaps(bank_id):
 def generate_exam(blueprint_id):
     conn = get_db()
     body = request.get_json(silent=True) or {}
+    blueprint = conn.execute(
+        "SELECT institution_id FROM exam_blueprints WHERE id = ?", (blueprint_id,)
+    ).fetchone()
+    if not blueprint:
+        return err("exam_blueprint_not_found", 404)
+    access_error = _require_feature_access(blueprint["institution_id"], "exam_generation")
+    if access_error:
+        return access_error
     try:
         exam_id, shortfalls = exams.generate_exam(
             conn, blueprint_id, version_label=body.get("version_label", "A"),
@@ -367,6 +510,82 @@ def select_provider():
     if not provider:
         return err("no available provider for this capability", 503)
     return jsonify(dict(provider))
+
+
+def _connected_system_host_allowlist():
+    return [
+        host.strip().lower()
+        for host in os.environ.get("CONNECTED_SYSTEM_ALLOWED_HOSTS", "").split(",")
+        if host.strip()
+    ]
+
+
+def _connected_system_allow_private():
+    return os.environ.get("CONNECTED_SYSTEM_ALLOW_PRIVATE", "0") == "1"
+
+
+@app.get("/api/admin/connected-systems")
+def list_connected_systems():
+    return jsonify({"systems": connected_systems.list_systems(get_db())})
+
+
+@app.post("/api/admin/connected-systems")
+def register_connected_system():
+    body = request.get_json(silent=True) or {}
+    try:
+        system_id = connected_systems.create_system(
+            get_db(),
+            name=body.get("name"),
+            base_url=body.get("base_url"),
+            auth_env_var=body.get("auth_env_var"),
+            institution_id=body.get("institution_id"),
+            scopes=body.get("scopes", []),
+            created_by=session.get("user", ""),
+            allowed_hosts=_connected_system_host_allowlist(),
+            allow_private=_connected_system_allow_private(),
+        )
+    except ValueError as exc:
+        message = str(exc)
+        status = 404 if message == "institution_not_found" else 400
+        return err(message, status)
+    return jsonify({"id": system_id, "status": "registered"}), 201
+
+
+@app.post("/api/admin/connected-systems/<system_id>/test")
+def test_connected_system(system_id):
+    try:
+        result = connected_systems.test_connection(
+            get_db(),
+            system_id,
+            actor_id=session.get("user", ""),
+            allowed_hosts=_connected_system_host_allowlist(),
+            allow_private=_connected_system_allow_private(),
+        )
+    except ValueError as exc:
+        message = str(exc)
+        status = 404 if message == "connected_system_not_found" else 409 if "not_testable" in message else 400
+        return err(message, status)
+    except RuntimeError as exc:
+        return err(str(exc), 502)
+    return jsonify(result)
+
+
+@app.post("/api/admin/connected-systems/<system_id>/status")
+def change_connected_system_status(system_id):
+    body = request.get_json(silent=True) or {}
+    try:
+        status = connected_systems.change_status(
+            get_db(),
+            system_id,
+            status=body.get("status"),
+            actor_id=session.get("user", ""),
+            reason=body.get("reason", ""),
+        )
+    except ValueError as exc:
+        message = str(exc)
+        code = 404 if message == "connected_system_not_found" else 409 if "health_check_required" in message or "terminal" in message or "unchanged" in message else 400
+        return err(message, code)
+    return jsonify({"id": system_id, "status": status})
 
 
 if __name__ == "__main__":
