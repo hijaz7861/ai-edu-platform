@@ -91,6 +91,15 @@ def test_legacy_api_mode_is_explicitly_configurable(client, monkeypatch):
     assert response.status_code == 200
 
 
+def test_legacy_api_mode_cannot_bypass_auth_in_production(client, monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("REQUIRE_API_AUTH", "0")
+
+    response = client.get("/providers/select")
+    assert response.status_code == 401
+    assert response.get_json()["error"] == "authentication_required"
+
+
 
 def test_admin_subscription_api_requires_login(client):
     for path in ("/api/admin/plans", "/api/admin/subscriptions"):
