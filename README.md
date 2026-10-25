@@ -41,7 +41,7 @@ CI evidence: [GitHub Actions run 40101527706](https://github.com/hijaz7861/ai-ed
 
 The TLS checker, URL/expiry/private-address tests, and workflow passed CI on commit `11ffcd83590b5c3dfd7b1e574078dc5c6c58db26` ([run 40108310804](https://github.com/hijaz7861/ai-edu-platform/actions/runs/40108310804)). The scheduled dependency audit initially identified known vulnerabilities in Pillow 12.1.1; Pillow was upgraded to 13.0.0, and the follow-up audit passed ([run 40116536705](https://github.com/hijaz7861/ai-edu-platform/actions/runs/40116536705)). The TLS badge still does not prove a live certificate is valid until the workflow is run against the actual deployed public URL.
 
-The scheduled dependency audit is now configured in `.github/workflows/security-audit.yml`. The first audit found known vulnerabilities in Pillow 12.1.1; the dependency has been upgraded to Pillow 13.0.0 and the follow-up audit is pending. The audit badge reports workflow state, not a guarantee that every dependency is vulnerability-free.
+The scheduled dependency audit is configured in `.github/workflows/security-audit.yml`. The first audit found known vulnerabilities in Pillow 12.1.1; Pillow was upgraded to 13.0.0 and the follow-up audit passed in [GitHub Actions run 40116536705](https://github.com/hijaz7861/ai-edu-platform/actions/runs/40116536705). The badge reports workflow state, not a guarantee that every dependency is vulnerability-free; re-run the audit after dependency changes.
 
 ## Capability status
 
