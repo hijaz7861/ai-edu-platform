@@ -45,7 +45,8 @@
 - [x] Feature-gate foundations exist for class access, attendance, AI generation, question-bank analysis, and exam generation.
 - [ ] Audit and enforce entitlement checks on every paid endpoint and background job.
 - [ ] Test absent, expired, suspended, malformed, downgraded, and cross-tenant subscriptions for every gated capability.
-- [ ] Define validated subscription state transitions, event history, and idempotency.
+- [ ] Complete subscription lifecycle safety. Draft PR [#4](https://github.com/hijaz7861/ai-edu-platform/pull/4) implements an explicit transition matrix, rejects reactivation after cancellation, and makes repeated same-status updates no-ops; CI passed **110 tests** on the PR branch. Pending review/merge.
+- [ ] Add idempotency keys/event IDs for billing webhook processing; same-status no-op behavior is not a substitute for webhook event deduplication.
 - [ ] Ensure entitlement changes are based on trusted admin decisions or verified payment events, not client redirects or screenshots.
 - [ ] Verify manual free/trial access and school-grant flows end-to-end.
 - [ ] Add regression tests for plan changes, expiry, suspension, renewal, cancellation, grace, and past-due states.
@@ -144,4 +145,5 @@
 |---|---|---|---|
 | 2026-10-25 | Baseline | Main commit `241aaf1eb468cea4a6d9863a84e3de7ef079fbd8`; platform CI and dependency audit both reported success for that commit. | Verified at baseline |
 | 2026-10-25 | Hosting | Render service creation attempt returned HTTP 402 requiring billing information. | Blocked; no deployment confirmed |
+| 2026-10-25 | Phase 2 | Draft [PR #4](https://github.com/hijaz7861/ai-edu-platform/pull/4) adds explicit subscription status transitions and same-status idempotency; CI reports 110 tests passed and dependency audit succeeded. | Verified on PR branch; pending review/merge |
 
