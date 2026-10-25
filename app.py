@@ -108,7 +108,8 @@ def enforce_api_security():
     # Admin APIs are always protected. Legacy mode only relaxes non-admin APIs
     # for isolated demos; it must never expose plan/subscription administration.
     is_admin_api = request.path.startswith("/api/admin/")
-    legacy_mode = os.environ.get("REQUIRE_API_AUTH", "1") != "1"
+    production_mode = os.environ.get("APP_ENV", "").strip().lower() == "production"
+    legacy_mode = (not production_mode) and os.environ.get("REQUIRE_API_AUTH", "1").strip() != "1"
     if not request.path.startswith(_PROTECTED_API_PREFIXES):
         return None
 
