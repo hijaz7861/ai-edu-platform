@@ -124,3 +124,53 @@ def test_second_active_subscription_requires_explicit_status_change(conn):
             conn, institution_id="school-1", plan_id=plan_b,
             granted_by="admin", reason="Overlapping access",
         )
+
+def test_status_transition_matrix_rejects_reactivation_after_cancellation(conn):
+    plan_id = create_plan(conn, code="terminal", name="Terminal")
+    sub_id = grant_subscription(
+        conn, institution_id="school-1", plan_id=plan_id,
+        granted_by="admin", reason="Initial access",
+    )
+    change_subscription_status(
+        conn, sub_id, status="cancelled", actor_id="admin", reason="Cancelled by owner",
+    )
+    before = conn.execute(
+        "SELECT COUNT(*) AS total FROM subscription_events WHERE subscription_id = ?",
+        (sub_id,),
+    ).fetchone()["total"]
+
+    with pytest.raises(ValueError, match="invalid subscription status transition"):
+        change_subscription_status(
+            conn, sub_id, status="active", actor_id="billing-webhook", reason="Stale event",
+        )
+
+    after = conn.execute(
+        "SELECT COUNT(*) AS total FROM subscription_events WHERE subscription_id = ?",
+        (sub_id,),
+    ).fetchone()["total"]
+    assert after == before
+    assert conn.execute(
+        "SELECT status FROM institution_subscriptions WHERE id = ?", (sub_id,)
+    ).fetchone()["status"] == "cancelled"
+
+
+def test_repeated_subscription_status_is_idempotent(conn):
+    plan_id = create_plan(conn, code="idempotent", name="Idempotent")
+    sub_id = grant_subscription(
+        conn, institution_id="school-1", plan_id=plan_id,
+        granted_by="admin", reason="Initial access",
+    )
+    before = conn.execute(
+        "SELECT COUNT(*) AS total FROM subscription_events WHERE subscription_id = ?",
+        (sub_id,),
+    ).fetchone()["total"]
+
+    change_subscription_status(
+        conn, sub_id, status="active", actor_id="admin", reason="Duplicate active event",
+    )
+
+    after = conn.execute(
+        "SELECT COUNT(*) AS total FROM subscription_events WHERE subscription_id = ?",
+        (sub_id,),
+    ).fetchone()["total"]
+    assert after == before
