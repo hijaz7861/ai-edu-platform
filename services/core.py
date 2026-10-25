@@ -170,10 +170,36 @@ def require_permission(conn, user_id, permission, scope_type, scope_id):
 
 # ---------- Tenant isolation helper ----------
 
-def scoped_query(conn, table, institution_id, extra_where="", params=()):
-    """Every cross-tenant read should go through this, not raw SELECTs, so isolation
-    is enforced in one place instead of hoped-for at every call site."""
-    sql = f"SELECT * FROM {table} WHERE institution_id = ?"
-    if extra_where:
-        sql += f" AND {extra_where}"
-    return conn.execute(sql, (institution_id, *params)).fetchall()
+# Only tables whose schema has a direct institution_id column are eligible.
+# Keep SQL identifiers out of request-controlled data and keep all filter values
+# parameterized. Add tables here only after checking their tenancy semantics.
+_TENANT_SCOPED_TABLES = frozenset({
+    "institutions",
+    "campuses",
+    "departments",
+    "classes",
+    "users",
+    "teachers",
+    "students",
+    "attendance_method_configs",
+    "attendance_policies",
+    "attendance_events",
+    "leave_types",
+    "books",
+})
+
+
+def scoped_query(conn, table, institution_id):
+    """Read rows for one institution from an explicitly approved tenant-scoped table.
+
+    Arbitrary SQL fragments are intentionally unsupported: callers must use
+    parameterized, reviewed queries for more complex filters.
+    """
+    if not isinstance(table, str) or table not in _TENANT_SCOPED_TABLES:
+        raise ValueError("unsupported_tenant_scoped_table")
+    if not isinstance(institution_id, str) or not institution_id.strip():
+        raise ValueError("institution_id_required")
+    return conn.execute(
+        f"SELECT * FROM {table} WHERE institution_id = ?",
+        (institution_id,),
+    ).fetchall()
