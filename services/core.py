@@ -174,7 +174,6 @@ def require_permission(conn, user_id, permission, scope_type, scope_id):
 # Keep SQL identifiers out of request-controlled data and keep all filter values
 # parameterized. Add tables here only after checking their tenancy semantics.
 _TENANT_SCOPED_TABLES = frozenset({
-    "institutions",
     "campuses",
     "departments",
     "classes",
