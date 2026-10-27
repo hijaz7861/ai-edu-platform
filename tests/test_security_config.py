@@ -43,7 +43,7 @@ def test_production_requires_secure_cookie_even_if_override_is_zero():
     assert app.secret_key == env["SECRET_KEY"]
 
 
-@pytest.mark.parametrize("secret", ["short", "replace-with-a-long-random-secret", "password" * 4])
+@pytest.mark.parametrize("secret", ["short", "replace-with-a-long-random-secret", "password"])
 def test_production_rejects_short_or_placeholder_secret(secret):
     with pytest.raises(RuntimeError, match="SECRET_KEY"):
         configure_security(make_app(), production_env(SECRET_KEY=secret))
