@@ -59,7 +59,11 @@ def audit_sensitive_request(response):
     path = request.path
     is_auth_route = path in {"/auth/login", "/auth/logout"}
     is_admin_route = path.startswith(("/admin/", "/api/admin/")) or path == "/api/admin"
-    if not (is_auth_route or is_admin_route):
+    is_protected_mutation = (
+        request.method in {"POST", "PUT", "PATCH", "DELETE"}
+        and path.startswith(_PROTECTED_API_PREFIXES)
+    )
+    if not (is_auth_route or is_admin_route or is_protected_mutation):
         return response
 
     if path == "/auth/login":
@@ -71,8 +75,14 @@ def audit_sensitive_request(response):
         )
     elif path == "/auth/logout":
         event_type = "logout_succeeded" if response.status_code == 302 else "logout_rejected"
-    else:
+    elif is_admin_route:
         event_type = "admin_request_rejected" if response.status_code >= 400 else "admin_request_completed"
+    else:
+        event_type = (
+            "protected_mutation_rejected"
+            if response.status_code >= 400
+            else "protected_mutation_completed"
+        )
 
     try:
         append_security_event(
@@ -84,7 +94,7 @@ def audit_sensitive_request(response):
             response_status=response.status_code,
             actor_id=session.get("user"),
             actor_role=session.get("role"),
-            details={"category": "authentication" if is_auth_route else "admin"},
+            details={"category": "authentication" if is_auth_route else "admin" if is_admin_route else "protected_mutation"},
         )
     except Exception:
         # Audit failure must be visible to operators without leaking internals
