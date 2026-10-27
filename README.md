@@ -59,7 +59,7 @@ The scheduled dependency audit is configured in `.github/workflows/security-audi
 | Exam assembly | Blueprint-driven selection logic exists and rejects insufficient question pools |
 | Performance tracking | Stored-answer/topic-performance service logic exists |
 | Notifications and voice/NLU | Real email/SMS/push delivery and full model-backed NLU are not complete |
-| Agent governance | Approval gates, audit redaction, retention, and provider selection foundations exist |
+| Agent governance and security audit | Approval gates, audit redaction, retention, and provider selection foundations exist. Login/admin/protected-mutation events are recorded in an append-only SQLite audit table; client addresses are stored as keyed digests, not raw IPs. This does not protect against a database administrator who can alter the database file |
 | Login and sessions | One environment-configured platform-admin login with session/CSRF protections, persistent per-username/IP failed-login throttling, baseline security headers, and no-store on sensitive pages; sessions without the explicit platform-admin role are denied protected routes. No full multi-user identity system, recovery, or MFA |
 | SaaS plans and school access | Subscription plan/grant/status foundation exists in PR #1; it does not process payments |
 | Entitlement enforcement | Production gates now protect class access, attendance, AI generation, question-bank analysis, and exam generation. Full route/background-job coverage and tenant identity binding remain outstanding |
@@ -109,6 +109,7 @@ services/questions.py        # duplicate detection and question-bank logic
 services/exams.py            # exam blueprint assembly
 services/performance.py      # performance analysis
 services/governance.py       # approval gates, audit and provider governance
+services/security_audit.py  # append-only authentication/admin security events
 providers/base.py            # provider interface, registry and OpenAI-compatible adapter
 providers/gemini.py           # native Gemini REST adapter
 templates/                   # login, dashboard, subscription and Connected Systems UI
