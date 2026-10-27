@@ -127,3 +127,36 @@ def test_authentication_failure_is_recorded_by_request_middleware(tmp_path, monk
         assert row["response_status"] == 401
     finally:
         audit_conn.close()
+
+
+
+def test_rejected_protected_mutation_is_audited(tmp_path, monkeypatch):
+    import app as app_module
+
+    database_path = str(tmp_path / "protected-mutation-audit.db")
+    schema = init_db(database_path)
+    schema.close()
+    monkeypatch.setattr(app_module, "DB_PATH", database_path)
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("REQUIRE_API_AUTH", "1")
+    app_module.app.config.update(TESTING=True)
+
+    with app_module.app.test_client() as client:
+        response = client.post(
+            "/institutions",
+            json={"name": "Audit School", "code": "AUDIT"},
+        )
+        assert response.status_code == 401
+
+    audit_conn = get_connection(database_path)
+    try:
+        row = audit_conn.execute(
+            "SELECT event_type, route, response_status, detail_json "
+            "FROM security_audit_events ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+        assert row["event_type"] == "protected_mutation_rejected"
+        assert row["route"] == "/institutions"
+        assert row["response_status"] == 401
+        assert '"category":"protected_mutation"' in row["detail_json"]
+    finally:
+        audit_conn.close()
