@@ -115,3 +115,7 @@ templates/                   # login, dashboard, subscription and Connected Syst
 tests/                       # automated tests, including Connected Systems security tests
 docs/                        # architecture, integration, finance and release-gate documents
 ```
+
+## Project ownership
+
+Project owner and maintainer: **Muhammad Naeem Khan** (`hijaz7861`).
