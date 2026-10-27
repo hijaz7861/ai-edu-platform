@@ -43,6 +43,18 @@ The TLS checker, URL/expiry/private-address tests, and workflow passed CI on com
 
 The scheduled dependency audit is configured in `.github/workflows/security-audit.yml`. The first audit found known vulnerabilities in Pillow 12.1.1; Pillow was upgraded to 13.0.0 and the follow-up audit passed in [GitHub Actions run 40116536705](https://github.com/hijaz7861/ai-edu-platform/actions/runs/40116536705). The badge reports workflow state, not a guarantee that every dependency is vulnerability-free; re-run the audit after dependency changes.
 
+## SQLite backup and verification
+
+The standard-library helper creates a consistent local SQLite backup, checks database integrity and foreign-key consistency, and writes a SHA-256 sidecar:
+
+```bash
+BACKUP="backups/platform-$(date -u +%Y%m%dT%H%M%SZ).sqlite3"
+python tools/backup_sqlite.py backup --output "$BACKUP"
+python tools/backup_sqlite.py verify --backup "$BACKUP"
+```
+
+Set `AI_EDU_DB` to override the source database path. Backup files and the `backups/` directory are ignored by Git. This tool does **not** upload backups off-site or perform a destructive restore. Before production, configure separate off-site storage, retention/access controls, encryption, and documented restore drills.
+
 ## Capability status
 
 | Capability | Current status |
