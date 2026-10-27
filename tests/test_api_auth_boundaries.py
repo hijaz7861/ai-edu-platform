@@ -80,3 +80,20 @@ def test_admin_api_mutation_requires_csrf_even_in_legacy_demo_mode(client, monke
     )
     assert response.status_code == 400
     assert response.get_json() == {"error": "csrf_invalid"}
+
+
+def test_every_api_route_is_middleware_protected_or_explicitly_public():
+    # Prevent a newly registered API route from silently bypassing the
+    # centralized authentication middleware. Health status is intentionally
+    # public so platform probes can check process liveness.
+    import app as app_module
+
+    public_api_routes = {"/api/status"}
+    unprotected = []
+    for rule in app_module.app.url_map.iter_rules():
+        if not rule.rule.startswith("/api/") or rule.rule in public_api_routes:
+            continue
+        if not rule.rule.startswith(app_module._PROTECTED_API_PREFIXES):
+            unprotected.append(rule.rule)
+
+    assert unprotected == []
