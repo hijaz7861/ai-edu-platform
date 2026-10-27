@@ -59,7 +59,10 @@ def verify_backup(backup_path: str | Path, *, checksum_path: str | Path | None =
     sidecar = Path(checksum_path).expanduser().resolve() if checksum_path else Path(str(path) + ".sha256")
     if not sidecar.is_file():
         raise ValueError(f"checksum sidecar is missing: {sidecar}")
-    expected = sidecar.read_text(encoding="utf-8").strip().split()[0]
+    checksum_fields = sidecar.read_text(encoding="utf-8").strip().split()
+    if not checksum_fields:
+        raise ValueError("checksum sidecar is empty")
+    expected = checksum_fields[0]
     actual = _sha256(path)
     if len(expected) != 64 or expected.lower() != actual:
         raise ValueError("backup SHA-256 checksum mismatch")
@@ -109,7 +112,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
     backup_parser = subparsers.add_parser("backup", help="create and verify a consistent SQLite backup")
-    backup_parser.add_argument("--database", default=os.environ.get("AI_EDU_DB", "storage/platform.db"))
+    default_database = os.environ.get(
+        "AI_EDU_DB", str(Path(__file__).resolve().parents[1] / "storage" / "platform.db")
+    )
+    backup_parser.add_argument("--database", default=default_database)
     backup_parser.add_argument("--output", required=True, help="output .sqlite3 backup path")
     verify_parser = subparsers.add_parser("verify", help="verify checksum, SQLite integrity and foreign keys")
     verify_parser.add_argument("--backup", required=True, help="backup file created by this tool")
