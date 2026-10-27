@@ -18,6 +18,7 @@ from services import core, attendance, questions, exams, performance, governance
 from services.licensing import feature_allowed
 from services.login_throttle import clear_failures, is_locked, record_failure
 from services.api_rate_limit import allow_request
+from services.security_audit import append_security_event
 from providers.base import get_default_registry
 from dashboard_api import dashboard_api
 
@@ -40,6 +41,55 @@ def add_security_headers(response):
     response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
     if request.path == "/" or request.path.startswith(("/auth/", "/admin/", "/api/admin/")):
         response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+def _security_audit_source_hash():
+    # Store a keyed digest rather than a raw client IP address.
+    identity = request.remote_addr or ""
+    return hmac.new(
+        str(app.secret_key).encode("utf-8"),
+        ("security-audit|" + identity).encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+@app.after_request
+def audit_sensitive_request(response):
+    path = request.path
+    is_auth_route = path in {"/auth/login", "/auth/logout"}
+    is_admin_route = path.startswith(("/admin/", "/api/admin/")) or path == "/api/admin"
+    if not (is_auth_route or is_admin_route):
+        return response
+
+    if path == "/auth/login":
+        event_type = (
+            "login_succeeded" if response.status_code == 302
+            else "login_throttled" if response.status_code == 429
+            else "login_failed" if response.status_code == 401
+            else "login_rejected"
+        )
+    elif path == "/auth/logout":
+        event_type = "logout_succeeded" if response.status_code == 302 else "logout_rejected"
+    else:
+        event_type = "admin_request_rejected" if response.status_code >= 400 else "admin_request_completed"
+
+    try:
+        append_security_event(
+            get_db(),
+            event_type=event_type,
+            source_hash=_security_audit_source_hash(),
+            http_method=request.method,
+            route=path,
+            response_status=response.status_code,
+            actor_id=session.get("user"),
+            actor_role=session.get("role"),
+            details={"category": "authentication" if is_auth_route else "admin"},
+        )
+    except Exception:
+        # Audit failure must be visible to operators without leaking internals
+        # or changing an already-produced business response.
+        app.logger.exception("Failed to persist security audit event")
     return response
 
 
