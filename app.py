@@ -110,14 +110,26 @@ def enforce_api_security():
     is_admin_api = request.path.startswith("/api/admin/")
     production_mode = os.environ.get("APP_ENV", "").strip().lower() == "production"
     legacy_mode = (not production_mode) and os.environ.get("REQUIRE_API_AUTH", "1").strip() != "1"
-    if not request.path.startswith(_PROTECTED_API_PREFIXES):
+    is_api_route = request.path.startswith("/api/")
+    public_routes = {"/", "/auth/login", "/health", "/api/status"}
+    is_public_route = (
+        request.path in public_routes
+        or request.path.startswith("/static/")
+    )
+    # In production, default-deny every route not explicitly public. This
+    # prevents newly added business endpoints from bypassing the protected
+    # prefix list. Development keeps the existing explicit-prefix behavior.
+    must_protect = request.path.startswith(_PROTECTED_API_PREFIXES) or (
+        production_mode and not is_public_route
+    )
+    if not must_protect:
         return None
 
     rate_limit_enabled = (
-        os.environ.get("APP_ENV", "").strip().lower() == "production"
+        production_mode
         or os.environ.get("API_RATE_LIMIT_ENABLED", "0") == "1"
     )
-    if rate_limit_enabled and not allow_request(
+    if rate_limit_enabled and is_api_route and not allow_request(
         get_db(),
         _api_rate_key(),
         limit=int(app.config.get("API_RATE_LIMIT_PER_MINUTE", 120)),
