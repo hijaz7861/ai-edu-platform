@@ -1,5 +1,6 @@
 """Database-backed school identities with tenant-bound role assignments."""
 import re
+import sqlite3
 import uuid
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -30,6 +31,12 @@ def create_school_user(conn, *, email, password, institution_id, role_name, gran
     ).fetchone()
     if institution is None:
         raise ValueError("active_institution_required")
+    existing_email = conn.execute(
+        "SELECT id FROM users WHERE lower(email) = ? LIMIT 1",
+        (email,),
+    ).fetchone()
+    if existing_email is not None:
+        raise ValueError("email_already_exists")
     role = conn.execute(
         "SELECT id, scope_level FROM roles WHERE name = ?",
         (role_name,),
@@ -51,6 +58,9 @@ def create_school_user(conn, *, email, password, institution_id, role_name, gran
             (uuid.uuid4().hex, user_id, role["id"], institution_id, granted_by),
         )
         conn.commit()
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        raise ValueError("email_already_exists") from None
     except Exception:
         conn.rollback()
         raise
@@ -62,16 +72,21 @@ def authenticate_school_user(conn, *, email, password):
     email = email.strip().lower() if isinstance(email, str) else ""
     if not email or not isinstance(password, str) or not password:
         return None
-    row = conn.execute(
+    rows = conn.execute(
         """
         SELECT u.id, u.email, u.institution_id, u.password_hash
         FROM users u
         JOIN institutions i ON i.id = u.institution_id AND i.status = 'active'
         WHERE lower(u.email) = ? AND u.status = 'active'
+        LIMIT 2
         """,
         (email,),
-    ).fetchone()
-    if row is None or not row["password_hash"]:
+    ).fetchall()
+    # Fail closed if a legacy database contains case-variant duplicate emails.
+    if len(rows) != 1:
+        return None
+    row = rows[0]
+    if not row["password_hash"]:
         return None
     try:
         valid = check_password_hash(row["password_hash"], password)
