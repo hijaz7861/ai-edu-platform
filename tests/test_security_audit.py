@@ -2,7 +2,7 @@ import sqlite3
 
 import pytest
 
-from db import init_db
+from db import get_connection, init_db
 from services.security_audit import append_security_event
 
 
@@ -84,3 +84,46 @@ def test_security_audit_rejects_invalid_event_fields(conn, overrides):
     args.update(overrides)
     with pytest.raises(ValueError):
         append_security_event(conn, **args)
+
+
+
+def test_authentication_failure_is_recorded_by_request_middleware(tmp_path, monkeypatch):
+    import app as app_module
+
+    database_path = str(tmp_path / "security-audit.db")
+    schema = init_db(database_path)
+    schema.close()
+    monkeypatch.setattr(app_module, "DB_PATH", database_path)
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("ADMIN_USERNAME", "audit-test-admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "audit-test-password-2026")
+    monkeypatch.setenv("REQUIRE_API_AUTH", "1")
+    app_module.app.config.update(TESTING=True)
+
+    with app_module.app.test_client() as client:
+        client.get("/")
+        with client.session_transaction() as session:
+            csrf = session["csrf_token"]
+        response = client.post(
+            "/auth/login",
+            data={
+                "username": "audit-test-admin",
+                "password": "incorrect-password",
+                "csrf_token": csrf,
+            },
+        )
+        assert response.status_code == 401
+
+    audit_conn = get_connection(database_path)
+    try:
+        row = audit_conn.execute(
+            "SELECT event_type, route, source_hash, response_status "
+            "FROM security_audit_events ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+        assert row["event_type"] == "login_failed"
+        assert row["route"] == "/auth/login"
+        assert row["source_hash"] != "127.0.0.1"
+        assert len(row["source_hash"]) == 64
+        assert row["response_status"] == 401
+    finally:
+        audit_conn.close()
