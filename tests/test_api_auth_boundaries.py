@@ -97,3 +97,20 @@ def test_every_api_route_is_middleware_protected_or_explicitly_public():
             unprotected.append(rule.rule)
 
     assert unprotected == []
+
+
+
+def test_production_default_denies_non_api_routes_not_explicitly_public(client, monkeypatch):
+    # /auth/logout is intentionally outside the API-prefix allowlist. In
+    # production, all non-public routes must still require a session.
+    monkeypatch.setenv("APP_ENV", "production")
+    response = client.post("/auth/logout")
+    assert response.status_code == 401
+    assert response.get_json() == {"error": "authentication_required"}
+
+
+@pytest.mark.parametrize("path", ["/health", "/api/status"])
+def test_production_keeps_only_explicit_health_routes_public(client, monkeypatch, path):
+    monkeypatch.setenv("APP_ENV", "production")
+    response = client.get(path)
+    assert response.status_code == 200
