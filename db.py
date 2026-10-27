@@ -387,6 +387,34 @@ CREATE TABLE IF NOT EXISTS connected_system_events (
     created_at TEXT NOT NULL
 );
 
+-- Append-only security events for authentication and admin request auditing.
+CREATE TABLE IF NOT EXISTS security_audit_events (
+    id TEXT PRIMARY KEY,
+    event_type TEXT NOT NULL,
+    actor_id TEXT,
+    actor_role TEXT,
+    source_hash TEXT NOT NULL,
+    http_method TEXT NOT NULL,
+    route TEXT NOT NULL,
+    response_status INTEGER NOT NULL,
+    detail_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_security_audit_created_at
+    ON security_audit_events(created_at);
+CREATE INDEX IF NOT EXISTS idx_security_audit_event_type
+    ON security_audit_events(event_type);
+CREATE TRIGGER IF NOT EXISTS security_audit_no_update
+BEFORE UPDATE ON security_audit_events
+BEGIN
+    SELECT RAISE(ABORT, 'security audit events are append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS security_audit_no_delete
+BEFORE DELETE ON security_audit_events
+BEGIN
+    SELECT RAISE(ABORT, 'security audit events are append-only');
+END;
+
 """
 
 
