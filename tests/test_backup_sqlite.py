@@ -71,3 +71,15 @@ def test_backup_verification_requires_checksum_sidecar(tmp_path):
 
     with pytest.raises(ValueError, match="checksum sidecar is missing"):
         verify_backup(target)
+
+
+
+def test_backup_verification_rejects_empty_checksum_sidecar(tmp_path):
+    source = tmp_path / "source.db"
+    init_db(str(source)).close()
+    target = tmp_path / "backup.sqlite3"
+    backup_database(source, target)
+    (tmp_path / "backup.sqlite3.sha256").write_text("", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="checksum sidecar is empty"):
+        verify_backup(target)
