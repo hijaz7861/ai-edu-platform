@@ -152,3 +152,18 @@ def test_user_creation_rejects_platform_role_and_short_password(school_app):
             granted_by="platform-admin",
         )
     conn.close()
+
+
+
+def test_case_insensitive_duplicate_email_is_rejected(school_app):
+    conn = init_db(school_app["db_path"])
+    with pytest.raises(ValueError, match="email_already_exists"):
+        identity.create_school_user(
+            conn,
+            email=school_app["user"]["email"].upper(),
+            password="another strong password",
+            institution_id=school_app["institution_a"],
+            role_name="Principal",
+            granted_by="platform-admin",
+        )
+    conn.close()
