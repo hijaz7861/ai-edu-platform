@@ -1,5 +1,3 @@
-import sqlite3
-
 import pytest
 
 from db import get_connection, init_db
