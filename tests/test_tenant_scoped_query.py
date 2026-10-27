@@ -52,6 +52,19 @@ def test_scoped_query_returns_only_rows_for_requested_institution(conn, table):
     assert rows[0]["institution_id"] != institution_b
 
 
+def test_every_allowlisted_table_has_direct_institution_id_column(conn):
+    # Guard the allowlist against schema drift: scoped_query relies on each
+    # approved table having a direct tenant key, not an indirect relationship.
+    for table in core._TENANT_SCOPED_TABLES:
+        columns = {
+            row["name"]
+            for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        assert "institution_id" in columns, (
+            f"{table} is allowlisted but has no direct institution_id column"
+        )
+
+
 def test_scoped_query_rejects_unapproved_table_names(conn):
     institution_id = _institution(conn, "Tenant")
 
