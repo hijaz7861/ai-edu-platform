@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS sections (
 );
 CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY, institution_id TEXT REFERENCES institutions(id),
-    email TEXT UNIQUE NOT NULL, status TEXT DEFAULT 'active', created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    email TEXT UNIQUE NOT NULL, status TEXT DEFAULT 'active', password_hash TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS roles (
     id TEXT PRIMARY KEY, name TEXT NOT NULL, scope_level TEXT NOT NULL, permissions TEXT NOT NULL
@@ -406,6 +406,10 @@ def get_connection(db_path: str = None) -> sqlite3.Connection:
 def init_db(db_path: str = None):
     conn = get_connection(db_path)
     conn.executescript(SCHEMA)
+    # Safe additive migration for existing databases created before school-user auth.
+    user_columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+    if "password_hash" not in user_columns:
+        conn.execute("ALTER TABLE users ADD COLUMN password_hash TEXT")
     conn.commit()
     return conn
 
