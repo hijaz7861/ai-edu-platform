@@ -129,7 +129,10 @@ def enforce_api_security():
         production_mode
         or os.environ.get("API_RATE_LIMIT_ENABLED", "0") == "1"
     )
-    if rate_limit_enabled and is_api_route and not allow_request(
+    rate_limit_candidate = (
+        is_api_route or request.path.startswith(_PROTECTED_API_PREFIXES)
+    )
+    if rate_limit_enabled and rate_limit_candidate and not allow_request(
         get_db(),
         _api_rate_key(),
         limit=int(app.config.get("API_RATE_LIMIT_PER_MINUTE", 120)),
