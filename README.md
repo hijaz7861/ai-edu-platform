@@ -20,7 +20,7 @@ Required local settings:
 - `REQUIRE_API_AUTH=1`: keep business APIs protected
 - `COOKIE_SECURE=1` when serving HTTPS outside local development
 
-For production, set `APP_ENV=production`, provide a stable `SECRET_KEY` and configured admin credentials, and use HTTPS. The app now rejects missing production configuration and forces secure session cookies in production. This is a configuration safeguard, not a complete production deployment review. See [HTTPS/SSL-TLS setup and verification](docs/HTTPS_AND_SSL.md). The TLS badge reflects the latest manually triggered check only; it does not prove a certificate is active until a real deployed public URL has been checked.
+For production, set `APP_ENV=production`, provide a stable `SECRET_KEY` of at least 32 characters, a non-placeholder admin username, and a unique admin password of at least 16 characters; use HTTPS. Production rejects missing/weak placeholder credentials, forces secure session cookies, and defaults to denying every non-public route unless a signed-in platform-admin session is present. `/`, `/auth/login`, `/health`, `/api/status`, and static assets are the explicit public exceptions. This is a fail-closed safeguard, not complete school-user RBAC or a complete production deployment review. See [HTTPS/SSL-TLS setup and verification](docs/HTTPS_AND_SSL.md). The TLS badge reflects the latest manually triggered check only; it does not prove a certificate is active until a real deployed public URL has been checked.
 
 ## Run tests
 
