@@ -18,6 +18,7 @@ from services import core, attendance, questions, exams, performance, governance
 from services.licensing import feature_allowed
 from services.login_throttle import clear_failures, is_locked, record_failure
 from services.api_rate_limit import allow_request
+from services import identity
 from providers.base import get_default_registry
 from dashboard_api import dashboard_api
 
@@ -100,7 +101,8 @@ _PROTECTED_API_PREFIXES = (
     "/api/question-banks",
     "/api/exams",
     "/api/approval-gates",
-    "/api/admin/",)
+    "/api/admin/",
+    "/api/school/",)
 
 
 @app.before_request
@@ -126,9 +128,21 @@ def enforce_api_security():
         response.headers["Retry-After"] = "60"
         return response, 429
 
+    if session.get("user") and session.get("role") == "school_user":
+        if request.path.startswith("/api/school/"):
+            if not identity.active_tenant_identity(
+                get_db(),
+                user_id=session.get("user_id"),
+                institution_id=session.get("institution_id"),
+            ):
+                session.clear()
+                return jsonify({"error": "school_identity_inactive"}), 401
+            if request.method in {"POST", "PUT", "PATCH", "DELETE"} and not _valid_csrf():
+                return jsonify({"error": "csrf_invalid"}), 400
+            return None
+        return jsonify({"error": "platform_admin_required"}), 403
+
     if session.get("user") and session.get("role") != "platform_admin":
-        # Until school-user login and route-level RBAC are implemented, fail
-        # closed rather than treating any authenticated session as an admin.
         return jsonify({"error": "platform_admin_required"}), 403
 
     if legacy_mode and not is_admin_api:
@@ -164,6 +178,8 @@ def connected_systems_admin_page():
 
 @app.route("/", methods=["GET"])
 def home():
+    if session.get("user") and session.get("role") == "school_user":
+        return redirect(url_for("school_dashboard"))
     if session.get("user"):
         return render_template("dashboard.html", username=session["user"])
     return render_template("login.html")
@@ -202,6 +218,99 @@ def login():
     if locked:
         return "Too many failed login attempts. Try again later.", 429
     return "Invalid credentials. Please try again.", 401
+
+
+@app.route("/auth/school-login", methods=["POST"])
+def school_login():
+    if not _valid_csrf():
+        return jsonify({"error": "csrf_invalid"}), 400
+    email = request.form.get("email", "")
+    password = request.form.get("password", "")
+    rate_key = _login_rate_key(email)
+    conn = get_db()
+    if is_locked(conn, rate_key):
+        return jsonify({"error": "login_throttled"}), 429
+    user = identity.authenticate_school_user(conn, email=email, password=password)
+    if user is None:
+        record_failure(conn, rate_key)
+        return jsonify({"error": "invalid_credentials"}), 401
+    clear_failures(conn, rate_key)
+    session.clear()
+    session["user"] = user["email"]
+    session["user_id"] = user["id"]
+    session["institution_id"] = user["institution_id"]
+    session["school_role_name"] = user["role_name"]
+    session["role"] = "school_user"
+    session["csrf_token"] = secrets.token_urlsafe(32)
+    return redirect(url_for("school_dashboard"))
+
+
+@app.get("/school")
+def school_dashboard():
+    if not session.get("user") or session.get("role") != "school_user":
+        return redirect(url_for("home"))
+    if not identity.active_tenant_identity(
+        get_db(), user_id=session.get("user_id"),
+        institution_id=session.get("institution_id"),
+    ):
+        session.clear()
+        return redirect(url_for("home"))
+    institution = get_db().execute(
+        "SELECT name FROM institutions WHERE id = ?",
+        (session["institution_id"],),
+    ).fetchone()
+    return render_template(
+        "school_dashboard.html",
+        username=session["user"],
+        institution_name=institution["name"] if institution else "Institution",
+        role_name=session.get("school_role_name", "School user"),
+    )
+
+
+@app.get("/api/school/me")
+def school_me():
+    institution = get_db().execute(
+        "SELECT id, name, code FROM institutions WHERE id = ? AND status = 'active'",
+        (session["institution_id"],),
+    ).fetchone()
+    if institution is None:
+        return jsonify({"error": "active_institution_required"}), 403
+    return jsonify({
+        "user": session["user"],
+        "role": session.get("school_role_name"),
+        "institution": dict(institution),
+    })
+
+
+@app.get("/api/school/classes")
+def school_classes():
+    permissions = core.user_permissions_in_scope(
+        get_db(), session["user_id"], "institution", session["institution_id"]
+    )
+    if not ({"*", "manage_institution", "view_all_reports"} & permissions):
+        return jsonify({"error": "permission_denied"}), 403
+    rows = core.scoped_query(get_db(), "classes", session["institution_id"])
+    return jsonify({"classes": [dict(row) for row in rows]})
+
+
+@app.post("/api/admin/school-users")
+def admin_create_school_user():
+    body = request.get_json(silent=True) or {}
+    try:
+        created = identity.create_school_user(
+            get_db(),
+            email=body.get("email"),
+            password=body.get("password"),
+            institution_id=body.get("institution_id"),
+            role_name=body.get("role_name"),
+            granted_by=session.get("user", ""),
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception:
+        app.logger.exception("Failed to create school identity")
+        return jsonify({"error": "school_user_creation_failed"}), 500
+    return jsonify(created), 201
 
 
 @app.route("/auth/logout", methods=["POST"])
