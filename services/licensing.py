@@ -14,6 +14,17 @@ VALID_INTERVALS = {"monthly", "yearly", "none"}
 VALID_STATUSES = {"trialing", "active", "past_due", "suspended", "cancelled", "expired"}
 VALID_ACCESS_TYPES = {"paid", "free_grant", "trial"}
 
+# Deliberately explicit lifecycle: terminal states cannot silently regain access.
+# A new subscription should be created after cancellation/expiry.
+ALLOWED_STATUS_TRANSITIONS = {
+    "trialing": {"active", "past_due", "suspended", "cancelled", "expired"},
+    "active": {"past_due", "suspended", "cancelled", "expired"},
+    "past_due": {"active", "suspended", "cancelled", "expired"},
+    "suspended": {"active", "cancelled", "expired"},
+    "cancelled": {"expired"},
+    "expired": set(),
+}
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -171,11 +182,21 @@ def change_subscription_status(
     if not str(actor_id or "").strip() or not str(reason or "").strip():
         raise ValueError("actor_id and reason are required")
     row = conn.execute(
-        "SELECT id, institution_id FROM institution_subscriptions WHERE id = ?",
+        "SELECT id, institution_id, status FROM institution_subscriptions WHERE id = ?",
         (subscription_id,),
     ).fetchone()
     if not row:
         raise ValueError("subscription not found")
+
+    current_status = row["status"]
+    if status == current_status:
+        # Idempotent retries must not append duplicate state-change events.
+        return
+    if status not in ALLOWED_STATUS_TRANSITIONS.get(current_status, set()):
+        raise ValueError(
+            f"invalid subscription status transition: {current_status} -> {status}"
+        )
+
     now = _now()
     conn.execute(
         "UPDATE institution_subscriptions SET status = ?, updated_at = ? WHERE id = ?",
