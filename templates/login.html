@@ -16,7 +16,15 @@
         <div class="mb-3"><label for="password" class="form-label">Password</label><input id="password" type="password" name="password" class="form-control" autocomplete="current-password" required maxlength="1024"></div>
         <button class="btn btn-primary w-100" type="submit">Sign in</button>
       </form>
-      <p class="small text-secondary mt-3 mb-0">Access is available only after server credentials are configured.</p>
+      <hr class="my-4">
+      <h2 class="h5 text-center">School staff sign in</h2>
+      <form method="post" action="/auth/school-login" autocomplete="on">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <div class="mb-3"><label for="school-email" class="form-label">School email</label><input id="school-email" type="email" name="email" class="form-control" autocomplete="username" required maxlength="254"></div>
+        <div class="mb-3"><label for="school-password" class="form-label">Password</label><input id="school-password" type="password" name="password" class="form-control" autocomplete="current-password" required maxlength="1024"></div>
+        <button class="btn btn-outline-primary w-100" type="submit">Sign in to school</button>
+      </form>
+      <p class="small text-secondary mt-3 mb-0">School accounts must be created by a platform administrator. School accounts cannot access platform administration.</p>
     </section>
   </main>
 </body>
