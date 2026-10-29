@@ -1,0 +1,44 @@
+version: 2.1
+
+jobs:
+  verify:
+    docker:
+      - image: cimg/python:3.13
+    resource_class: small
+    working_directory: ~/project
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - v1-py313-{{ checksum "requirements.txt" }}
+            - v1-py313-
+      - run:
+          name: Install OCR system dependency
+          command: |
+            sudo apt-get update
+            sudo apt-get install -y tesseract-ocr
+            tesseract --version
+      - run:
+          name: Install project and audit dependencies
+          command: |
+            python -m pip install --upgrade pip
+            pip install -r requirements.txt
+            pip install pip-audit
+      - save_cache:
+          key: v1-py313-{{ checksum "requirements.txt" }}
+          paths:
+            - ~/.cache/pip
+      - run:
+          name: Syntax audit
+          command: python -m compileall -q app.py db.py services providers tests tools
+      - run:
+          name: Test suite
+          command: pytest -q
+      - run:
+          name: Dependency security audit
+          command: pip-audit --requirement requirements.txt
+
+workflows:
+  verify:
+    jobs:
+      - verify

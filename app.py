@@ -18,6 +18,7 @@ from services import core, attendance, questions, exams, performance, governance
 from services.licensing import feature_allowed
 from services.login_throttle import clear_failures, is_locked, record_failure
 from services.api_rate_limit import allow_request
+from services.security_audit import append_security_event
 from providers.base import get_default_registry
 from dashboard_api import dashboard_api
 
@@ -40,6 +41,65 @@ def add_security_headers(response):
     response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
     if request.path == "/" or request.path.startswith(("/auth/", "/admin/", "/api/admin/")):
         response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+def _security_audit_source_hash():
+    # Store a keyed digest rather than a raw client IP address.
+    identity = request.remote_addr or ""
+    return hmac.new(
+        str(app.secret_key).encode("utf-8"),
+        ("security-audit|" + identity).encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+@app.after_request
+def audit_sensitive_request(response):
+    path = request.path
+    is_auth_route = path in {"/auth/login", "/auth/logout"}
+    is_admin_route = path.startswith(("/admin/", "/api/admin/")) or path == "/api/admin"
+    is_protected_mutation = (
+        request.method in {"POST", "PUT", "PATCH", "DELETE"}
+        and path.startswith(_PROTECTED_API_PREFIXES)
+    )
+    if not (is_auth_route or is_admin_route or is_protected_mutation):
+        return response
+
+    if path == "/auth/login":
+        event_type = (
+            "login_succeeded" if response.status_code == 302
+            else "login_throttled" if response.status_code == 429
+            else "login_failed" if response.status_code == 401
+            else "login_rejected"
+        )
+    elif path == "/auth/logout":
+        event_type = "logout_succeeded" if response.status_code == 302 else "logout_rejected"
+    elif is_admin_route:
+        event_type = "admin_request_rejected" if response.status_code >= 400 else "admin_request_completed"
+    else:
+        event_type = (
+            "protected_mutation_rejected"
+            if response.status_code >= 400
+            else "protected_mutation_completed"
+        )
+
+    try:
+        append_security_event(
+            get_db(),
+            event_type=event_type,
+            source_hash=_security_audit_source_hash(),
+            http_method=request.method,
+            route=path,
+            response_status=response.status_code,
+            actor_id=session.get("user"),
+            actor_role=session.get("role"),
+            details={"category": "authentication" if is_auth_route else "admin" if is_admin_route else "protected_mutation"},
+        )
+    except Exception:
+        # Audit failure must be visible to operators without leaking internals
+        # or changing an already-produced business response.
+        app.logger.exception("Failed to persist security audit event")
     return response
 
 
@@ -110,14 +170,29 @@ def enforce_api_security():
     is_admin_api = request.path.startswith("/api/admin/")
     production_mode = os.environ.get("APP_ENV", "").strip().lower() == "production"
     legacy_mode = (not production_mode) and os.environ.get("REQUIRE_API_AUTH", "1").strip() != "1"
-    if not request.path.startswith(_PROTECTED_API_PREFIXES):
+    is_api_route = request.path.startswith("/api/")
+    public_routes = {"/", "/auth/login", "/health", "/api/status"}
+    is_public_route = (
+        request.path in public_routes
+        or request.path.startswith("/static/")
+    )
+    # In production, default-deny every route not explicitly public. This
+    # prevents newly added business endpoints from bypassing the protected
+    # prefix list. Development keeps the existing explicit-prefix behavior.
+    must_protect = request.path.startswith(_PROTECTED_API_PREFIXES) or (
+        production_mode and not is_public_route
+    )
+    if not must_protect:
         return None
 
     rate_limit_enabled = (
-        os.environ.get("APP_ENV", "").strip().lower() == "production"
+        production_mode
         or os.environ.get("API_RATE_LIMIT_ENABLED", "0") == "1"
     )
-    if rate_limit_enabled and not allow_request(
+    rate_limit_candidate = (
+        is_api_route or request.path.startswith(_PROTECTED_API_PREFIXES)
+    )
+    if rate_limit_enabled and rate_limit_candidate and not allow_request(
         get_db(),
         _api_rate_key(),
         limit=int(app.config.get("API_RATE_LIMIT_PER_MINUTE", 120)),

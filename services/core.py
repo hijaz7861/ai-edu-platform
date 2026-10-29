@@ -185,6 +185,9 @@ _TENANT_SCOPED_TABLES = frozenset({
     "attendance_events",
     "leave_types",
     "books",
+    # Directly tenant-owned education resources verified in db.py.
+    "question_banks",
+    "exam_blueprints",
 })
 
 

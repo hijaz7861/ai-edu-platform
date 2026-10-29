@@ -20,7 +20,7 @@ Required local settings:
 - `REQUIRE_API_AUTH=1`: keep business APIs protected
 - `COOKIE_SECURE=1` when serving HTTPS outside local development
 
-For production, set `APP_ENV=production`, provide a stable `SECRET_KEY` and configured admin credentials, and use HTTPS. The app now rejects missing production configuration and forces secure session cookies in production. This is a configuration safeguard, not a complete production deployment review. See [HTTPS/SSL-TLS setup and verification](docs/HTTPS_AND_SSL.md). The TLS badge reflects the latest manually triggered check only; it does not prove a certificate is active until a real deployed public URL has been checked.
+For production, set `APP_ENV=production`, provide a stable `SECRET_KEY` of at least 32 characters, a non-placeholder admin username, and a unique admin password of at least 16 characters; use HTTPS. Production rejects missing/weak placeholder credentials, forces secure session cookies, and defaults to denying every non-public route unless a signed-in platform-admin session is present. `/`, `/auth/login`, `/health`, `/api/status`, and static assets are the explicit public exceptions. This is a fail-closed safeguard, not complete school-user RBAC or a complete production deployment review. See [HTTPS/SSL-TLS setup and verification](docs/HTTPS_AND_SSL.md). The TLS badge reflects the latest manually triggered check only; it does not prove a certificate is active until a real deployed public URL has been checked.
 
 ## Run tests
 
@@ -43,6 +43,18 @@ The TLS checker, URL/expiry/private-address tests, and workflow passed CI on com
 
 The scheduled dependency audit is configured in `.github/workflows/security-audit.yml`. The first audit found known vulnerabilities in Pillow 12.1.1; Pillow was upgraded to 13.0.0 and the follow-up audit passed in [GitHub Actions run 40116536705](https://github.com/hijaz7861/ai-edu-platform/actions/runs/40116536705). The badge reports workflow state, not a guarantee that every dependency is vulnerability-free; re-run the audit after dependency changes.
 
+## SQLite backup and verification
+
+The standard-library helper creates a consistent local SQLite backup, checks database integrity and foreign-key consistency, and writes a SHA-256 sidecar:
+
+```bash
+BACKUP="backups/platform-$(date -u +%Y%m%dT%H%M%SZ).sqlite3"
+python tools/backup_sqlite.py backup --output "$BACKUP"
+python tools/backup_sqlite.py verify --backup "$BACKUP"
+```
+
+Set `AI_EDU_DB` to override the source database path. Backup files and the `backups/` directory are ignored by Git. This tool does **not** upload backups off-site or perform a destructive restore. Before production, configure separate off-site storage, retention/access controls, encryption, and documented restore drills.
+
 ## Capability status
 
 | Capability | Current status |
@@ -59,7 +71,7 @@ The scheduled dependency audit is configured in `.github/workflows/security-audi
 | Exam assembly | Blueprint-driven selection logic exists and rejects insufficient question pools |
 | Performance tracking | Stored-answer/topic-performance service logic exists |
 | Notifications and voice/NLU | Real email/SMS/push delivery and full model-backed NLU are not complete |
-| Agent governance | Approval gates, audit redaction, retention, and provider selection foundations exist |
+| Agent governance and security audit | Approval gates, audit redaction, retention, and provider selection foundations exist. Login/admin/protected-mutation events are recorded in an append-only SQLite audit table; client addresses are stored as keyed digests, not raw IPs. This does not protect against a database administrator who can alter the database file |
 | Login and sessions | One environment-configured platform-admin login with session/CSRF protections, persistent per-username/IP failed-login throttling, baseline security headers, and no-store on sensitive pages; sessions without the explicit platform-admin role are denied protected routes. No full multi-user identity system, recovery, or MFA |
 | SaaS plans and school access | Subscription plan/grant/status foundation exists in PR #1; it does not process payments |
 | Entitlement enforcement | Production gates now protect class access, attendance, AI generation, question-bank analysis, and exam generation. Full route/background-job coverage and tenant identity binding remain outstanding |
@@ -109,6 +121,7 @@ services/questions.py        # duplicate detection and question-bank logic
 services/exams.py            # exam blueprint assembly
 services/performance.py      # performance analysis
 services/governance.py       # approval gates, audit and provider governance
+services/security_audit.py  # append-only authentication/admin security events
 providers/base.py            # provider interface, registry and OpenAI-compatible adapter
 providers/gemini.py           # native Gemini REST adapter
 templates/                   # login, dashboard, subscription and Connected Systems UI
