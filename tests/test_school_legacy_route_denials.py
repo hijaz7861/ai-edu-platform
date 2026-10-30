@@ -128,3 +128,61 @@ def test_platform_admin_keeps_legacy_access_to_unclassified_demo_route(monkeypat
         result = app_module.enforce_api_security()
 
     assert result is None
+
+
+
+def test_school_session_is_denied_from_every_registered_platform_route_and_blueprint_method(
+    school_session_client, monkeypatch
+):
+    """Enumerate Flask and dashboard blueprint routes to catch future auth gaps."""
+    import re
+    import app as app_module
+
+    # Keep this a focused authorization test; the request middleware is still
+    # exercised, while the limiter's persistent state is outside this assertion.
+    monkeypatch.setattr(app_module, "allow_request", lambda *args, **kwargs: True)
+
+    allowed_paths = {
+        "/", "/auth/login", "/auth/school-login", "/auth/logout",
+        "/school", "/health", "/api/status",
+    }
+    checked = []
+    blueprint_routes = set()
+
+    for rule in app_module.app.url_map.iter_rules():
+        path = re.sub(
+            r"<(?:(int|float|path|uuid|string):)?([^>]+)>",
+            lambda match: (
+                "1" if match.group(1) == "int"
+                else "1.0" if match.group(1) == "float"
+                else "00000000-0000-0000-0000-000000000001"
+                if match.group(1) == "uuid"
+                else "sample"
+            ),
+            rule.rule,
+        )
+        if (
+            path in allowed_paths
+            or path.startswith("/static/")
+            or path.startswith("/api/school/")
+        ):
+            continue
+
+        methods = set(rule.methods or ()) - {"HEAD", "OPTIONS"}
+        for method in sorted(methods):
+            response = school_session_client.open(
+                path,
+                method=method,
+                json={} if method in {"POST", "PUT", "PATCH", "DELETE"} else None,
+            )
+            assert response.status_code == 403, (
+                f"{method} {path} ({rule.endpoint}) must be denied to school sessions; "
+                f"got {response.status_code}: {response.get_data(as_text=True)}"
+            )
+            assert response.get_json() == {"error": "platform_admin_required"}
+            checked.append((method, path, rule.endpoint))
+            if rule.endpoint.startswith("dashboard_api."):
+                blueprint_routes.add(rule.endpoint)
+
+    assert checked, "expected registered platform routes to be covered"
+    assert blueprint_routes, "dashboard_api blueprint routes must be included in coverage"
