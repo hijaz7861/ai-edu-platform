@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import shutil
 import tempfile
 from pathlib import Path
 from urllib.parse import quote
@@ -108,6 +109,92 @@ def backup_database(database_path: str | Path, output_path: str | Path) -> dict:
             temporary.unlink()
 
 
+
+def restore_backup(backup_path: str | Path, destination_path: str | Path) -> dict:
+    """Restore a verified backup to a new path without overwriting any file.
+
+    The destination and its checksum sidecar are published with no-clobber
+    hard links from temporary files in the destination directory. A failed
+    sidecar publish rolls back the database link created by this operation.
+    """
+    source = Path(backup_path).expanduser().resolve()
+    target = Path(destination_path).expanduser().resolve()
+    if source == target:
+        raise ValueError("restore destination must differ from the backup source")
+
+    verified = verify_backup(source)
+    sidecar_target = Path(str(target) + ".sha256")
+    if target.exists() or sidecar_target.exists():
+        raise ValueError("restore destination already exists")
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    db_fd, db_temp_name = tempfile.mkstemp(
+        prefix=".sqlite-restore-", suffix=".tmp", dir=target.parent
+    )
+    os.close(db_fd)
+    db_temp = Path(db_temp_name)
+    sidecar_fd, sidecar_temp_name = tempfile.mkstemp(
+        prefix=".sqlite-restore-checksum-", suffix=".tmp", dir=target.parent
+    )
+    os.close(sidecar_fd)
+    sidecar_temp = Path(sidecar_temp_name)
+    published_database = False
+    published_sidecar = False
+
+    try:
+        with source.open("rb") as source_stream, db_temp.open("wb") as destination_stream:
+            shutil.copyfileobj(source_stream, destination_stream)
+            destination_stream.flush()
+            os.fsync(destination_stream.fileno())
+
+        if _sha256(db_temp) != verified["sha256"]:
+            raise ValueError("restored backup checksum mismatch")
+        _check_database(db_temp)
+
+        with sidecar_temp.open("w", encoding="utf-8") as stream:
+            stream.write(f"{verified['sha256']}  {target.name}\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+
+        # os.link is atomic and refuses to replace a destination created by
+        # another process after the preflight existence check.
+        try:
+            os.link(db_temp, target)
+        except FileExistsError:
+            raise ValueError("restore destination already exists") from None
+        published_database = True
+
+        try:
+            os.link(sidecar_temp, sidecar_target)
+        except FileExistsError:
+            raise ValueError("restore checksum destination already exists") from None
+        published_sidecar = True
+
+        try:
+            directory_fd = os.open(target.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except OSError:
+            # Directory fsync is not supported on every filesystem. The file
+            # data and checksum have already been fsynced before publication.
+            pass
+
+        result = verify_backup(target)
+        result["restored_to"] = str(target)
+        return result
+    except Exception:
+        if published_sidecar:
+            sidecar_target.unlink(missing_ok=True)
+        if published_database:
+            target.unlink(missing_ok=True)
+        raise
+    finally:
+        db_temp.unlink(missing_ok=True)
+        sidecar_temp.unlink(missing_ok=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -119,13 +206,17 @@ def main() -> int:
     backup_parser.add_argument("--output", required=True, help="output .sqlite3 backup path")
     verify_parser = subparsers.add_parser("verify", help="verify checksum, SQLite integrity and foreign keys")
     verify_parser.add_argument("--backup", required=True, help="backup file created by this tool")
+    restore_parser = subparsers.add_parser("restore", help="restore a verified backup to a new destination")
+    restore_parser.add_argument("--backup", required=True, help="verified backup file")
+    restore_parser.add_argument("--destination", required=True, help="new database path; existing files are never overwritten")
     args = parser.parse_args()
 
-    result = (
-        backup_database(args.database, args.output)
-        if args.command == "backup"
-        else verify_backup(args.backup)
-    )
+    if args.command == "backup":
+        result = backup_database(args.database, args.output)
+    elif args.command == "verify":
+        result = verify_backup(args.backup)
+    else:
+        result = restore_backup(args.backup, args.destination)
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
 
