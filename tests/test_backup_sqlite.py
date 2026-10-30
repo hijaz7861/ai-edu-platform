@@ -107,6 +107,9 @@ def test_restore_creates_verified_database_at_new_destination(tmp_path):
     assert result["foreign_key_violations"] == 0
     assert result["restored_to"] == str(destination.resolve())
     assert (tmp_path / "restore-drill" / "restored-platform.db.sha256").is_file()
+    sidecar_text = (tmp_path / "restore-drill" / "restored-platform.db.sha256").read_text(encoding="utf-8")
+    assert sidecar_text.endswith("\n")
+    assert sidecar_text.split()[0] == result["sha256"]
     verified = verify_backup(destination)
     assert verified["sha256"] == result["sha256"]
 

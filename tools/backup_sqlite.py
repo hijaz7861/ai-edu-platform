@@ -152,7 +152,7 @@ def restore_backup(backup_path: str | Path, destination_path: str | Path) -> dic
         _check_database(db_temp)
 
         with sidecar_temp.open("w", encoding="utf-8") as stream:
-            stream.write(f"{verified['sha256']}  {target.name}\\n")
+            stream.write(f"{verified['sha256']}  {target.name}\n")
             stream.flush()
             os.fsync(stream.fileno())
 
