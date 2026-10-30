@@ -387,6 +387,18 @@ CREATE TABLE IF NOT EXISTS connected_system_events (
     created_at TEXT NOT NULL
 );
 
+-- Per-institution AI generation quota windows; minute/day rows are pruned on use.
+CREATE TABLE IF NOT EXISTS ai_generation_usage (
+    institution_id TEXT NOT NULL REFERENCES institutions(id) ON DELETE CASCADE,
+    window_kind TEXT NOT NULL CHECK (window_kind IN ('day', 'minute')),
+    window_start TEXT NOT NULL,
+    request_count INTEGER NOT NULL DEFAULT 0 CHECK (request_count >= 0),
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (institution_id, window_kind, window_start)
+);
+CREATE INDEX IF NOT EXISTS idx_ai_generation_usage_window
+    ON ai_generation_usage(window_kind, window_start);
+
 -- Append-only security events for authentication and admin request auditing.
 CREATE TABLE IF NOT EXISTS security_audit_events (
     id TEXT PRIMARY KEY,
