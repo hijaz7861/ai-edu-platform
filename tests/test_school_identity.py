@@ -335,3 +335,45 @@ def test_school_api_ignores_foreign_tenant_selector(school_app):
     )
     assert me.status_code == 200
     assert me.get_json()["institution"]["id"] == school_app["institution_a"]
+
+
+
+@pytest.mark.parametrize(
+    "revocation",
+    ["user_suspended", "institution_suspended", "role_removed", "tenant_reassigned"],
+)
+def test_active_school_session_is_revoked_after_identity_or_scope_change(school_app, revocation):
+    """A previously valid cookie must stop working after its DB authority changes."""
+    client = school_app["client"]
+    _login(client, school_app["user"])
+
+    conn = init_db(school_app["db_path"])
+    if revocation == "user_suspended":
+        conn.execute(
+            "UPDATE users SET status = 'suspended' WHERE id = ?",
+            (school_app["user"]["id"],),
+        )
+    elif revocation == "institution_suspended":
+        conn.execute(
+            "UPDATE institutions SET status = 'suspended' WHERE id = ?",
+            (school_app["institution_a"],),
+        )
+    elif revocation == "role_removed":
+        conn.execute(
+            "DELETE FROM role_assignments WHERE user_id = ?",
+            (school_app["user"]["id"],),
+        )
+    elif revocation == "tenant_reassigned":
+        conn.execute(
+            "UPDATE users SET institution_id = ? WHERE id = ?",
+            (school_app["institution_b"], school_app["user"]["id"]),
+        )
+    conn.commit()
+    conn.close()
+
+    response = client.get("/api/school/me")
+    assert response.status_code == 401
+    assert response.get_json() == {"error": "school_identity_inactive"}
+    with client.session_transaction() as session:
+        assert "user" not in session
+        assert "institution_id" not in session
