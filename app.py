@@ -547,9 +547,14 @@ def generate_question():
             response, status = err("ai_generation_quota_exceeded", 429)
             response.headers["Retry-After"] = str(quota["retry_after"])
             response.headers["X-AI-Daily-Limit"] = str(daily_limit)
-            response.headers["X-AI-Daily-Remaining"] = "0"
+            response.headers["X-AI-Daily-Remaining"] = str(
+                max(0, daily_limit - quota.get("daily_used", 0))
+            )
             response.headers["X-AI-Minute-Limit"] = str(per_minute_limit)
-            response.headers["X-AI-Minute-Remaining"] = "0"
+            response.headers["X-AI-Minute-Remaining"] = str(
+                max(0, per_minute_limit - quota.get("minute_used", 0))
+            )
+            response.headers["X-AI-Quota-Window"] = quota.get("reason", "unknown")
             return response, status
 
     try:
