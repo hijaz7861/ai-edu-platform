@@ -5,6 +5,7 @@ not reach legacy platform-wide endpoints, but they must be able to log out with
 a CSRF-protected POST.
 """
 import pytest
+from flask import session
 
 
 LEGACY_PLATFORM_ROUTES = [
@@ -86,3 +87,44 @@ def test_school_user_cannot_logout_without_csrf_in_production(school_session_cli
     assert response.get_json() == {"error": "csrf_invalid"}
     with school_session_client.session_transaction() as session:
         assert session["user"] == "school-admin@example.test"
+
+
+
+@pytest.mark.parametrize("role", ["school_user", "support_agent"])
+def test_non_platform_session_cannot_reach_unclassified_route_in_legacy_mode(
+    monkeypatch, role
+):
+    """Legacy demo mode must never bypass authenticated role boundaries."""
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("REQUIRE_API_AUTH", "0")
+    monkeypatch.setenv("API_RATE_LIMIT_ENABLED", "0")
+
+    import app as app_module
+
+    with app_module.app.test_request_context("/future/private-export", method="GET"):
+        session["user"] = "principal@example.test"
+        session["role"] = role
+        if role == "school_user":
+            session["user_id"] = "school-user-id"
+            session["institution_id"] = "tenant-a"
+        result = app_module.enforce_api_security()
+
+    assert isinstance(result, tuple), "unclassified routes must not bypass role authorization"
+    response, status = result
+    assert status == 403
+    assert response.get_json() == {"error": "platform_admin_required"}
+
+
+def test_platform_admin_keeps_legacy_access_to_unclassified_demo_route(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("REQUIRE_API_AUTH", "0")
+    monkeypatch.setenv("API_RATE_LIMIT_ENABLED", "0")
+
+    import app as app_module
+
+    with app_module.app.test_request_context("/future/demo-route", method="GET"):
+        session["user"] = "platform-admin"
+        session["role"] = "platform_admin"
+        result = app_module.enforce_api_security()
+
+    assert result is None

@@ -167,8 +167,8 @@ _PROTECTED_API_PREFIXES = (
 
 @app.before_request
 def enforce_api_security():
-    # Admin APIs are always protected. Legacy mode only relaxes non-admin APIs
-    # for isolated demos; it must never expose plan/subscription administration.
+    # Admin APIs are always protected. Legacy mode only relaxes anonymous
+    # access for isolated demos; it must never relax authenticated role bounds.
     is_admin_api = request.path.startswith("/api/admin/")
     production_mode = os.environ.get("APP_ENV", "").strip().lower() == "production"
     legacy_mode = (not production_mode) and os.environ.get("REQUIRE_API_AUTH", "1").strip() != "1"
@@ -184,8 +184,6 @@ def enforce_api_security():
     must_protect = request.path.startswith(_PROTECTED_API_PREFIXES) or (
         production_mode and not is_public_route
     )
-    if not must_protect:
-        return None
 
     rate_limit_enabled = (
         production_mode
@@ -194,7 +192,7 @@ def enforce_api_security():
     rate_limit_candidate = (
         is_api_route or request.path.startswith(_PROTECTED_API_PREFIXES)
     )
-    if rate_limit_enabled and rate_limit_candidate and not allow_request(
+    if must_protect and rate_limit_enabled and rate_limit_candidate and not allow_request(
         get_db(),
         _api_rate_key(),
         limit=int(app.config.get("API_RATE_LIMIT_PER_MINUTE", 120)),
@@ -203,24 +201,22 @@ def enforce_api_security():
         response.headers["Retry-After"] = "60"
         return response, 429
 
-    # Every authenticated role must be able to end its own session.
-    # In production, the default-deny policy reaches this middleware before
-    # the logout view; without this exception school users are denied logout.
-    # Keep the action POST-only and CSRF-protected.
-    if request.path == "/auth/logout":
-        if not session.get("user"):
-            return jsonify({"error": "authentication_required"}), 401
+    # Authenticated users must always be able to end their own session. Keep
+    # logout POST-only and CSRF-protected, even in development/legacy mode.
+    if request.path == "/auth/logout" and session.get("user"):
         if request.method != "POST":
             return jsonify({"error": "method_not_allowed"}), 405
         if not _valid_csrf():
             return jsonify({"error": "csrf_invalid"}), 400
         return None
 
+    # Enforce role boundaries before the development legacy-mode early return.
+    # Otherwise a future route outside the current prefix list could become
+    # reachable by a school or unknown-role session without route-level guards.
     if session.get("user") and session.get("role") == "school_user":
-        # School identities are accepted only on the explicitly tenant-scoped
-        # school API. Re-check active user, institution and role assignment on
-        # every request so stale/tampered session claims are not trusted.
         if request.path.startswith("/api/school/"):
+            # Re-check active user, institution and role assignment on every
+            # school API request; never trust tenant claims from the cookie.
             if not identity.active_tenant_identity(
                 get_db(),
                 user_id=session.get("user_id"),
@@ -231,11 +227,23 @@ def enforce_api_security():
             if request.method in {"POST", "PUT", "PATCH", "DELETE"} and not _valid_csrf():
                 return jsonify({"error": "csrf_invalid"}), 400
             return None
+        if is_public_route:
+            return None
         return jsonify({"error": "platform_admin_required"}), 403
 
     if session.get("user") and session.get("role") != "platform_admin":
+        # Unknown/retired roles may reach only authentication and health
+        # endpoints. In particular, do not render the platform dashboard.
+        safe_session_routes = {"/auth/login", "/auth/school-login", "/health", "/api/status"}
+        if request.path in safe_session_routes or request.path.startswith("/static/"):
+            return None
         return jsonify({"error": "platform_admin_required"}), 403
 
+    if not must_protect:
+        return None
+
+    # Legacy mode is for anonymous local demos only; authenticated role checks
+    # above always run before this compatibility escape hatch.
     if legacy_mode and not is_admin_api:
         return None
 

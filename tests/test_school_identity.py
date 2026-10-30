@@ -311,3 +311,27 @@ def test_school_login_locks_after_five_failed_attempts_and_does_not_store_email(
         assert rows[0]["locked_until"] is not None
     finally:
         conn.close()
+
+
+
+def test_school_api_ignores_foreign_tenant_selector(school_app):
+    """Tenant identity comes from the authenticated database binding, not query input."""
+    client = school_app["client"]
+    _login(client, school_app["user"])
+    foreign_tenant = school_app["institution_b"]
+
+    classes = client.get(
+        "/api/school/classes",
+        query_string={"institution_id": foreign_tenant},
+    )
+    assert classes.status_code == 200
+    class_rows = classes.get_json()["classes"]
+    assert [row["id"] for row in class_rows] == [school_app["class_a"]]
+    assert all(row["institution_id"] == school_app["institution_a"] for row in class_rows)
+
+    me = client.get(
+        "/api/school/me",
+        query_string={"institution_id": foreign_tenant},
+    )
+    assert me.status_code == 200
+    assert me.get_json()["institution"]["id"] == school_app["institution_a"]
