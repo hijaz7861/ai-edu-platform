@@ -151,10 +151,9 @@ def restore_backup(backup_path: str | Path, destination_path: str | Path) -> dic
             raise ValueError("restored backup checksum mismatch")
         _check_database(db_temp)
 
-        sidecar_temp.write_text(
-            f"{verified['sha256']}  {target.name}\\n", encoding="utf-8"
-        )
-        with sidecar_temp.open("rb") as stream:
+        with sidecar_temp.open("w", encoding="utf-8") as stream:
+            stream.write(f"{verified['sha256']}  {target.name}\\n")
+            stream.flush()
             os.fsync(stream.fileno())
 
         # os.link is atomic and refuses to replace a destination created by

@@ -1,7 +1,8 @@
 import pytest
+from pathlib import Path
 
 from db import get_connection, init_db
-from tools.backup_sqlite import backup_database, verify_backup
+from tools.backup_sqlite import backup_database, restore_backup, verify_backup
 
 
 def test_backup_is_consistent_checksummed_and_readable(tmp_path):
