@@ -9,13 +9,16 @@ every endpoint from the Phase 8/9 API design docs, to keep this file readable.
 """
 import hmac
 import hashlib
+import json
 import os
 import secrets
+import sqlite3
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify, g, abort, redirect, render_template, session, url_for
 from db import init_db, get_connection, DB_PATH
 from services import core, attendance, questions, exams, performance, governance, connected_systems
-from services.licensing import feature_allowed
+from services.licensing import feature_allowed, get_current_subscription
+from services.ai_quota import consume_ai_generation_quota
 from services.login_throttle import clear_failures, is_locked, record_failure
 from services.api_rate_limit import allow_request
 from services.security_audit import append_security_event
@@ -426,6 +429,58 @@ def teacher_check_out(teacher_id):
 
 # ---------- AI question generation ----------
 
+
+def _ai_generation_quota_limits(institution_id):
+    """Resolve bounded defaults with optional numeric plan-level overrides."""
+    def parse_limit(raw, name, default, maximum):
+        if raw is None:
+            raw = default
+        if isinstance(raw, bool):
+            raise ValueError(f"{name} must be an integer")
+        if isinstance(raw, str):
+            try:
+                raw = int(raw)
+            except ValueError:
+                raise ValueError(f"{name} must be an integer") from None
+        if not isinstance(raw, int) or raw < 0 or raw > maximum:
+            raise ValueError(f"{name} is outside the supported range")
+        return raw
+
+    daily = parse_limit(
+        os.environ.get("AI_GENERATION_DAILY_LIMIT", "100"),
+        "AI_GENERATION_DAILY_LIMIT",
+        100,
+        100_000,
+    )
+    per_minute = parse_limit(
+        os.environ.get("AI_GENERATION_PER_MINUTE_LIMIT", "10"),
+        "AI_GENERATION_PER_MINUTE_LIMIT",
+        10,
+        10_000,
+    )
+    subscription = get_current_subscription(get_db(), institution_id)
+    if subscription:
+        try:
+            entitlements = json.loads(subscription["entitlements_json"])
+        except (TypeError, ValueError):
+            raise ValueError("subscription quota configuration is invalid") from None
+        if not isinstance(entitlements, dict):
+            raise ValueError("subscription quota configuration is invalid")
+        daily = parse_limit(
+            entitlements.get("ai_generation_daily_limit"),
+            "ai_generation_daily_limit",
+            daily,
+            100_000,
+        )
+        per_minute = parse_limit(
+            entitlements.get("ai_generation_per_minute_limit"),
+            "ai_generation_per_minute_limit",
+            per_minute,
+            10_000,
+        )
+    return daily, per_minute
+
+
 @app.post("/api/questions/generate")
 def generate_question():
     body = request.get_json(silent=True) or {}
@@ -443,7 +498,10 @@ def generate_question():
     if difficulty not in {"easy", "medium", "hard"}:
         return err("unsupported difficulty", 400)
 
-    access_error = _require_feature_access(body.get("institution_id"), "ai_generation")
+    institution_id = body.get("institution_id")
+    if isinstance(institution_id, str):
+        institution_id = institution_id.strip()
+    access_error = _require_feature_access(institution_id, "ai_generation")
     if access_error:
         return access_error
 
@@ -468,13 +526,45 @@ def generate_question():
     if provider is None:
         return err("AI provider is not configured", 503)
 
+    quota = None
+    if institution_id is not None:
+        if not isinstance(institution_id, str) or not institution_id:
+            return err("institution_id_invalid", 400)
+        try:
+            daily_limit, per_minute_limit = _ai_generation_quota_limits(institution_id)
+            quota = consume_ai_generation_quota(
+                get_db(),
+                institution_id,
+                daily_limit=daily_limit,
+                per_minute_limit=per_minute_limit,
+            )
+        except (ValueError, sqlite3.Error):
+            app.logger.error("AI generation quota enforcement failed closed.")
+            return err("AI generation quota unavailable", 503)
+        if not quota["allowed"]:
+            if quota.get("reason") == "institution_inactive":
+                return err("institution_inactive", 403)
+            response, status = err("ai_generation_quota_exceeded", 429)
+            response.headers["Retry-After"] = str(quota["retry_after"])
+            response.headers["X-AI-Daily-Limit"] = str(daily_limit)
+            response.headers["X-AI-Daily-Remaining"] = "0"
+            response.headers["X-AI-Minute-Limit"] = str(per_minute_limit)
+            response.headers["X-AI-Minute-Remaining"] = "0"
+            return response, status
+
     try:
         result = provider.generate_question(concept, question_type, difficulty)
     except RuntimeError:
         app.logger.warning("AI question generation failed; provider error details withheld.")
         return err("AI generation failed; check model availability, API quota, and configuration", 502)
 
-    return jsonify({"question": result, "provider": provider.name}), 200
+    response = jsonify({"question": result, "provider": provider.name})
+    if quota is not None:
+        response.headers["X-AI-Daily-Limit"] = str(quota["daily_limit"])
+        response.headers["X-AI-Daily-Remaining"] = str(quota["daily_remaining"])
+        response.headers["X-AI-Minute-Limit"] = str(quota["per_minute_limit"])
+        response.headers["X-AI-Minute-Remaining"] = str(quota["minute_remaining"])
+    return response, 200
 
 
 # ---------- Phase 5 ----------
