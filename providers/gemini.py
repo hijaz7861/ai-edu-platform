@@ -12,6 +12,7 @@ import urllib.parse
 import urllib.request
 
 from providers.base import AIProvider
+from providers.http import encode_provider_payload, open_provider_request, read_provider_json
 
 
 class GeminiProvider(AIProvider):
@@ -40,13 +41,13 @@ class GeminiProvider(AIProvider):
             + ":generateContent"
         )
         prompt = instruction + "\nReturn only one valid JSON object. Input:\n" + json.dumps(payload, ensure_ascii=False)
-        body = json.dumps({
+        body = encode_provider_payload({
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
             "generationConfig": {
                 "temperature": 0.2,
                 "responseMimeType": "application/json",
             },
-        }).encode("utf-8")
+        }, "Gemini")
         request = urllib.request.Request(
             endpoint,
             data=body,
@@ -57,8 +58,8 @@ class GeminiProvider(AIProvider):
             },
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                data = json.loads(response.read().decode("utf-8"))
+            with open_provider_request(request, timeout=self.timeout) as response:
+                data = read_provider_json(response, "Gemini")
         except urllib.error.HTTPError as exc:
             raise RuntimeError("Gemini provider returned HTTP " + str(exc.code)) from None
         except (urllib.error.URLError, TimeoutError, OSError) as exc:

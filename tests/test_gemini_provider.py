@@ -33,7 +33,7 @@ def test_gemini_generates_question_and_sends_key_in_header(monkeypatch):
             }]
         })
 
-    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("providers.gemini.open_provider_request", fake_urlopen)
     provider = GeminiProvider(api_key="test-secret-never-log", model="gemini-3-flash-preview")
     result = provider.generate_question({"name": "photosynthesis"}, "short_answer", "easy")
 
@@ -58,7 +58,7 @@ def test_gemini_http_error_does_not_expose_credentials(monkeypatch):
     def fail_urlopen(request, timeout):
         raise urllib.error.HTTPError(request.full_url, 429, "quota", {}, None)
 
-    monkeypatch.setattr("urllib.request.urlopen", fail_urlopen)
+    monkeypatch.setattr("providers.gemini.open_provider_request", fail_urlopen)
     provider = GeminiProvider(api_key="private-key-value", model="gemini-3-flash-preview")
     with pytest.raises(RuntimeError, match="HTTP 429") as exc:
         provider.generate_question({"name": "gravity"}, "definition", "easy")
@@ -67,7 +67,7 @@ def test_gemini_http_error_does_not_expose_credentials(monkeypatch):
 
 def test_gemini_rejects_non_json_model_output(monkeypatch):
     monkeypatch.setattr(
-        "urllib.request.urlopen",
+        "providers.gemini.open_provider_request",
         lambda request, timeout: response_for({
             "candidates": [{"content": {"parts": [{"text": "not json"}]}}]
         }),

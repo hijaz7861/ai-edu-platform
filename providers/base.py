@@ -11,6 +11,8 @@ the same AIProvider interface, without touching any calling code.
 from abc import ABC, abstractmethod
 import os
 
+from providers.http import encode_provider_payload, open_provider_request, read_provider_json
+
 
 class AIProvider(ABC):
     name = "base"
@@ -144,7 +146,7 @@ class OpenAICompatibleProvider(AIProvider):
             raise RuntimeError("AI_API_KEY is not configured")
         if not self.base_url.startswith("https://") and not os.environ.get("AI_ALLOW_INSECURE_HTTP") == "1":
             raise RuntimeError("AI_BASE_URL must use HTTPS")
-        body = json.dumps({
+        body = encode_provider_payload({
             "model": self.model,
             "temperature": 0.2,
             "response_format": {"type": "json_object"},
@@ -152,14 +154,14 @@ class OpenAICompatibleProvider(AIProvider):
                 {"role": "system", "content": instruction + " Return only a valid JSON object."},
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
             ],
-        }).encode("utf-8")
+        }, "AI")
         req = urllib.request.Request(
             self.base_url + "/chat/completions", data=body, method="POST",
             headers={"Authorization": "Bearer " + self.api_key, "Content-Type": "application/json"},
         )
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as response:
-                data = json.loads(response.read().decode("utf-8"))
+            with open_provider_request(req, timeout=self.timeout) as response:
+                data = read_provider_json(response, "AI")
         except urllib.error.HTTPError as exc:
             # Do not include request headers or credentials in errors.
             raise RuntimeError("AI provider returned HTTP " + str(exc.code)) from None

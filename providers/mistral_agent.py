@@ -5,6 +5,8 @@ import os
 import urllib.error
 import urllib.request
 
+from providers.http import encode_provider_payload, open_provider_request, read_provider_json
+
 
 class MistralAgentProvider:
     name = "mistral-agent"
@@ -45,10 +47,10 @@ class MistralAgentProvider:
             + json.dumps(payload, ensure_ascii=False)
         )
 
-        body = json.dumps({
+        body = encode_provider_payload({
             "agent_id": self.agent_id,
             "inputs": prompt,
-        }).encode("utf-8")
+        }, "Mistral Agent")
 
         req = urllib.request.Request(
             "https://api.mistral.ai/v1/conversations",
@@ -61,15 +63,13 @@ class MistralAgentProvider:
         )
 
         try:
-            with urllib.request.urlopen(
-                req, timeout=self.timeout
-            ) as response:
-                data = json.loads(response.read().decode("utf-8"))
+            with open_provider_request(req, timeout=self.timeout) as response:
+                data = read_provider_json(response, "Mistral Agent")
         except urllib.error.HTTPError as exc:
             raise RuntimeError(
                 "Mistral Agent returned HTTP " + str(exc.code)
             ) from None
-        except (urllib.error.URLError, TimeoutError) as exc:
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
             raise RuntimeError(
                 "Mistral Agent connection failed: "
                 + type(exc).__name__
