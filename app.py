@@ -19,6 +19,7 @@ from services.licensing import feature_allowed
 from services.login_throttle import clear_failures, is_locked, record_failure
 from services.api_rate_limit import allow_request
 from services.security_audit import append_security_event
+from services import identity
 from providers.base import get_default_registry
 from dashboard_api import dashboard_api
 
@@ -57,7 +58,7 @@ def _security_audit_source_hash():
 @app.after_request
 def audit_sensitive_request(response):
     path = request.path
-    is_auth_route = path in {"/auth/login", "/auth/logout"}
+    is_auth_route = path in {"/auth/login", "/auth/school-login", "/auth/logout"}
     is_admin_route = path.startswith(("/admin/", "/api/admin/")) or path == "/api/admin"
     is_protected_mutation = (
         request.method in {"POST", "PUT", "PATCH", "DELETE"}
@@ -66,9 +67,9 @@ def audit_sensitive_request(response):
     if not (is_auth_route or is_admin_route or is_protected_mutation):
         return response
 
-    if path == "/auth/login":
+    if path in {"/auth/login", "/auth/school-login"}:
         event_type = (
-            "login_succeeded" if response.status_code == 302
+            "login_succeeded" if response.status_code in {200, 302}
             else "login_throttled" if response.status_code == 429
             else "login_failed" if response.status_code == 401
             else "login_rejected"
@@ -160,18 +161,29 @@ _PROTECTED_API_PREFIXES = (
     "/api/question-banks",
     "/api/exams",
     "/api/approval-gates",
-    "/api/admin/",)
+    "/api/admin/",
+    "/api/school/",)
+
+
+# School APIs are opt-in by exact Flask endpoint and HTTP method. A broad
+# /api/school/ prefix is not an authorization policy: new routes must be
+# reviewed and added here only after tenant and role checks are implemented.
+_SCHOOL_API_ROUTE_METHODS = frozenset({
+    ("school_me", "GET"),
+    ("school_classes", "GET"),
+    ("school_create_class", "POST"),
+})
 
 
 @app.before_request
 def enforce_api_security():
-    # Admin APIs are always protected. Legacy mode only relaxes non-admin APIs
-    # for isolated demos; it must never expose plan/subscription administration.
+    # Admin APIs are always protected. Legacy mode only relaxes anonymous
+    # access for isolated demos; it must never relax authenticated role bounds.
     is_admin_api = request.path.startswith("/api/admin/")
     production_mode = os.environ.get("APP_ENV", "").strip().lower() == "production"
     legacy_mode = (not production_mode) and os.environ.get("REQUIRE_API_AUTH", "1").strip() != "1"
     is_api_route = request.path.startswith("/api/")
-    public_routes = {"/", "/auth/login", "/health", "/api/status"}
+    public_routes = {"/", "/auth/login", "/auth/school-login", "/school", "/health", "/api/status"}
     is_public_route = (
         request.path in public_routes
         or request.path.startswith("/static/")
@@ -182,8 +194,6 @@ def enforce_api_security():
     must_protect = request.path.startswith(_PROTECTED_API_PREFIXES) or (
         production_mode and not is_public_route
     )
-    if not must_protect:
-        return None
 
     rate_limit_enabled = (
         production_mode
@@ -192,7 +202,7 @@ def enforce_api_security():
     rate_limit_candidate = (
         is_api_route or request.path.startswith(_PROTECTED_API_PREFIXES)
     )
-    if rate_limit_enabled and rate_limit_candidate and not allow_request(
+    if must_protect and rate_limit_enabled and rate_limit_candidate and not allow_request(
         get_db(),
         _api_rate_key(),
         limit=int(app.config.get("API_RATE_LIMIT_PER_MINUTE", 120)),
@@ -201,11 +211,54 @@ def enforce_api_security():
         response.headers["Retry-After"] = "60"
         return response, 429
 
-    if session.get("user") and session.get("role") != "platform_admin":
-        # Until school-user login and route-level RBAC are implemented, fail
-        # closed rather than treating any authenticated session as an admin.
+    # Authenticated users must always be able to end their own session. Keep
+    # logout POST-only and CSRF-protected, even in development/legacy mode.
+    if request.path == "/auth/logout" and session.get("user"):
+        if request.method != "POST":
+            return jsonify({"error": "method_not_allowed"}), 405
+        if not _valid_csrf():
+            return jsonify({"error": "csrf_invalid"}), 400
+        return None
+
+    # Enforce role boundaries before the development legacy-mode early return.
+    # Otherwise a future route outside the current prefix list could become
+    # reachable by a school or unknown-role session without route-level guards.
+    if session.get("user") and session.get("role") == "school_user":
+        if request.path.startswith("/api/school/"):
+            # Fail closed for unregistered routes and methods inside the school
+            # namespace. Otherwise a future endpoint could inherit access merely
+            # by sharing the prefix, before its tenant/RBAC policy is reviewed.
+            if (request.endpoint, request.method) not in _SCHOOL_API_ROUTE_METHODS:
+                return jsonify({"error": "school_route_not_authorized"}), 403
+            # Re-check active user, institution and role assignment on every
+            # school API request; never trust tenant claims from the cookie.
+            if not identity.active_tenant_identity(
+                get_db(),
+                user_id=session.get("user_id"),
+                institution_id=session.get("institution_id"),
+            ):
+                session.clear()
+                return jsonify({"error": "school_identity_inactive"}), 401
+            if request.method in {"POST", "PUT", "PATCH", "DELETE"} and not _valid_csrf():
+                return jsonify({"error": "csrf_invalid"}), 400
+            return None
+        if is_public_route:
+            return None
         return jsonify({"error": "platform_admin_required"}), 403
 
+    if session.get("user") and session.get("role") != "platform_admin":
+        # Unknown/retired roles may reach only authentication and health
+        # endpoints. In particular, do not render the platform dashboard.
+        safe_session_routes = {"/auth/login", "/auth/school-login", "/health", "/api/status"}
+        if request.path in safe_session_routes or request.path.startswith("/static/"):
+            return None
+        return jsonify({"error": "platform_admin_required"}), 403
+
+    if not must_protect:
+        return None
+
+    # Legacy mode is for anonymous local demos only; authenticated role checks
+    # above always run before this compatibility escape hatch.
     if legacy_mode and not is_admin_api:
         return None
 
@@ -239,6 +292,8 @@ def connected_systems_admin_page():
 
 @app.route("/", methods=["GET"])
 def home():
+    if session.get("user") and session.get("role") == "school_user":
+        return redirect(url_for("school_dashboard"))
     if session.get("user"):
         return render_template("dashboard.html", username=session["user"])
     return render_template("login.html")
@@ -277,6 +332,150 @@ def login():
     if locked:
         return "Too many failed login attempts. Try again later.", 429
     return "Invalid credentials. Please try again.", 401
+
+
+@app.route("/auth/school-login", methods=["POST"])
+def school_login():
+    if not _valid_csrf():
+        return err("csrf_invalid", 400)
+    email = request.form.get("email", "")
+    password = request.form.get("password", "")
+    rate_key = _login_rate_key(email)
+    conn = get_db()
+    if is_locked(conn, rate_key):
+        return err("login_throttled", 429)
+    user = identity.authenticate_school_user(conn, email=email, password=password)
+    if user is None:
+        record_failure(conn, rate_key)
+        return err("invalid_credentials", 401)
+    clear_failures(conn, rate_key)
+    session.clear()
+    session["user"] = user["email"]
+    session["user_id"] = user["id"]
+    session["institution_id"] = user["institution_id"]
+    session["school_role_name"] = user["role_name"]
+    session["role"] = "school_user"
+    session["csrf_token"] = secrets.token_urlsafe(32)
+    return redirect(url_for("school_dashboard"))
+
+
+@app.get("/school")
+def school_dashboard():
+    if not session.get("user") or session.get("role") != "school_user":
+        return redirect(url_for("home"))
+    if not identity.active_tenant_identity(
+        get_db(), user_id=session.get("user_id"),
+        institution_id=session.get("institution_id"),
+    ):
+        session.clear()
+        return redirect(url_for("home"))
+    institution = get_db().execute(
+        "SELECT name FROM institutions WHERE id = ?",
+        (session["institution_id"],),
+    ).fetchone()
+    return render_template(
+        "school_dashboard.html",
+        username=session["user"],
+        institution_name=institution["name"] if institution else "Institution",
+        role_name=session.get("school_role_name", "School user"),
+    )
+
+
+@app.get("/api/school/me")
+def school_me():
+    institution = get_db().execute(
+        "SELECT id, name, code FROM institutions WHERE id = ? AND status = 'active'",
+        (session["institution_id"],),
+    ).fetchone()
+    if institution is None:
+        return err("active_institution_required", 403)
+    return jsonify({
+        "user": session["user"],
+        "role": session.get("school_role_name"),
+        "institution": dict(institution),
+    })
+
+
+@app.post("/api/school/classes")
+def school_create_class():
+    institution_id = session["institution_id"]
+    access_error = _require_feature_access(institution_id, "class_management")
+    if access_error:
+        return access_error
+    permissions = identity.institution_permissions(
+        get_db(), user_id=session["user_id"], institution_id=institution_id
+    )
+    if not ({"*", "manage_institution"} & permissions):
+        return err("permission_denied", 403)
+
+    body = request.get_json(silent=True) or {}
+    name = body.get("name")
+    if not isinstance(name, str) or not name.strip() or len(name.strip()) > 200:
+        return err("class_name_required", 400)
+    academic_year = body.get("academic_year", "2026-2027")
+    if not isinstance(academic_year, str) or not academic_year.strip() or len(academic_year) > 40:
+        return err("invalid_academic_year", 400)
+
+    conn = get_db()
+    campus_id = body.get("campus_id")
+    if campus_id is not None:
+        campus = conn.execute(
+            "SELECT id FROM campuses WHERE id = ? AND institution_id = ? AND status = 'active'",
+            (campus_id, institution_id),
+        ).fetchone()
+        if campus is None:
+            return err("campus_not_in_institution", 400)
+    else:
+        campus = conn.execute(
+            "SELECT id FROM campuses WHERE institution_id = ? AND status = 'active' ORDER BY rowid LIMIT 1",
+            (institution_id,),
+        ).fetchone()
+        if campus is None:
+            campus_id = core.create_campus(
+                conn, institution_id, "Main Campus", "MAIN-" + institution_id[:8]
+            )
+        else:
+            campus_id = campus["id"]
+
+    class_id = core.create_class(
+        conn, institution_id, campus_id, name.strip(), academic_year.strip()
+    )
+    return jsonify({"id": class_id, "institution_id": institution_id, "name": name.strip()}), 201
+
+
+@app.get("/api/school/classes")
+def school_classes():
+    access_error = _require_feature_access(session["institution_id"], "class_management")
+    if access_error:
+        return access_error
+    permissions = identity.institution_permissions(
+        get_db(), user_id=session["user_id"],
+        institution_id=session["institution_id"],
+    )
+    if not ({"*", "manage_institution", "view_all_reports"} & permissions):
+        return err("permission_denied", 403)
+    rows = core.scoped_query(get_db(), "classes", session["institution_id"])
+    return jsonify({"classes": [dict(row) for row in rows]})
+
+
+@app.post("/api/admin/school-users")
+def admin_create_school_user():
+    body = request.get_json(silent=True) or {}
+    try:
+        created = identity.create_school_user(
+            get_db(),
+            email=body.get("email"),
+            password=body.get("password"),
+            institution_id=body.get("institution_id"),
+            role_name=body.get("role_name"),
+            granted_by=session.get("user", ""),
+        )
+    except ValueError as exc:
+        return err(str(exc), 400)
+    except Exception:
+        app.logger.exception("Failed to create school identity")
+        return err("school_user_creation_failed", 500)
+    return jsonify(created), 201
 
 
 @app.route("/auth/logout", methods=["POST"])
