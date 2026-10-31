@@ -1,9 +1,11 @@
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from db import SCHEMA
+from db import SCHEMA, get_connection
 from services.licensing import (
     change_subscription_status,
     create_plan,
@@ -175,3 +177,86 @@ def test_repeated_subscription_status_is_idempotent(conn):
         (sub_id,),
     ).fetchone()["total"]
     assert after == before
+
+
+
+def test_concurrent_grants_cannot_create_two_current_subscriptions(conn):
+    """BEGIN IMMEDIATE serializes the check-and-grant lifecycle across connections."""
+    plan_id = create_plan(conn, code="concurrent", name="Concurrent")
+    db_path = conn.execute("PRAGMA database_list").fetchone()["file"]
+    barrier = Barrier(2)
+
+    def grant_from_separate_connection():
+        worker_conn = get_connection(db_path)
+        try:
+            barrier.wait(timeout=5)
+            try:
+                result = grant_subscription(
+                    worker_conn, institution_id="school-1", plan_id=plan_id,
+                    granted_by="concurrency-test", reason="Concurrent grant test",
+                )
+                return ("created", result)
+            except ValueError as exc:
+                return ("rejected", str(exc))
+        finally:
+            worker_conn.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: grant_from_separate_connection(), range(2)))
+
+    assert [result[0] for result in results].count("created") == 1
+    assert [result[0] for result in results].count("rejected") == 1
+    assert conn.execute(
+        "SELECT COUNT(*) AS total FROM institution_subscriptions "
+        "WHERE institution_id = 'school-1' AND status IN ('active', 'trialing')"
+    ).fetchone()["total"] == 1
+    assert conn.execute(
+        "SELECT COUNT(*) AS total FROM subscription_events "
+        "WHERE institution_id = 'school-1' AND event_type = 'subscription_granted'"
+    ).fetchone()["total"] == 1
+
+
+def test_concurrent_same_status_events_create_one_audit_event(conn):
+    """A repeated status event is idempotent even when requests overlap."""
+    plan_id = create_plan(conn, code="status-race", name="Status race")
+    sub_id = grant_subscription(
+        conn, institution_id="school-1", plan_id=plan_id,
+        granted_by="admin", reason="Initial access",
+    )
+    db_path = conn.execute("PRAGMA database_list").fetchone()["file"]
+    barrier = Barrier(2)
+
+    def suspend_from_separate_connection():
+        worker_conn = get_connection(db_path)
+        try:
+            barrier.wait(timeout=5)
+            change_subscription_status(
+                worker_conn, sub_id, status="suspended",
+                actor_id="concurrency-test", reason="Concurrent duplicate event",
+            )
+        finally:
+            worker_conn.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(lambda _: suspend_from_separate_connection(), range(2)))
+
+    assert conn.execute(
+        "SELECT status FROM institution_subscriptions WHERE id = ?", (sub_id,)
+    ).fetchone()["status"] == "suspended"
+    assert conn.execute(
+        "SELECT COUNT(*) AS total FROM subscription_events "
+        "WHERE subscription_id = ? AND event_type = 'subscription_status_changed'",
+        (sub_id,),
+    ).fetchone()["total"] == 1
+
+
+def test_subscription_write_requires_clean_connection_transaction(conn):
+    plan_id = create_plan(conn, code="clean-transaction", name="Clean transaction")
+    conn.execute("BEGIN")
+    with pytest.raises(RuntimeError, match="subscription_write_requires_clean_connection"):
+        grant_subscription(
+            conn, institution_id="school-1", plan_id=plan_id,
+            granted_by="admin", reason="Nested transaction rejection",
+        )
+    conn.rollback()
+    assert get_current_subscription(conn, "school-1") is None
