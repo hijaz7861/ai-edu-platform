@@ -76,6 +76,18 @@ def create_plan(
     return plan_id
 
 
+def _begin_subscription_write(conn) -> None:
+    """Acquire SQLite's writer reservation before checking lifecycle state.
+
+    These service methods own their transaction. Refuse an outer transaction
+    rather than committing unrelated caller work or silently losing isolation.
+    BEGIN IMMEDIATE serializes concurrent grant/status requests before reads.
+    """
+    if conn.in_transaction:
+        raise RuntimeError("subscription_write_requires_clean_connection")
+    conn.execute("BEGIN IMMEDIATE")
+
+
 def grant_subscription(
     conn,
     *,
@@ -87,7 +99,7 @@ def grant_subscription(
     starts_at: str | None = None,
     ends_at: str | None = None,
 ) -> str:
-    """Grant a plan to an institution and record an auditable event."""
+    """Grant a plan atomically; concurrent grants cannot pass the same pre-check."""
     if access_type not in VALID_ACCESS_TYPES:
         raise ValueError("unsupported access_type")
     if not str(granted_by or "").strip():
@@ -97,44 +109,58 @@ def grant_subscription(
     start = starts_at or _now()
     end = ends_at
     try:
+        if not isinstance(start, str) or not start:
+            raise ValueError("starts_at and ends_at must be ISO-8601 timestamps")
+        if end is not None and not isinstance(end, str):
+            raise ValueError("starts_at and ends_at must be ISO-8601 timestamps")
         start_dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
         end_dt = datetime.fromisoformat(end.replace("Z", "+00:00")) if end else None
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, AttributeError):
         raise ValueError("starts_at and ends_at must be ISO-8601 timestamps") from None
     if end_dt and end_dt <= start_dt:
         raise ValueError("ends_at must be later than starts_at")
 
-    institution = conn.execute("SELECT id FROM institutions WHERE id = ?", (institution_id,)).fetchone()
-    if not institution:
-        raise ValueError("institution not found")
-    plan = conn.execute(
-        "SELECT id, is_active FROM platform_plans WHERE id = ?", (plan_id,)
-    ).fetchone()
-    if not plan or not plan["is_active"]:
-        raise ValueError("plan not found or inactive")
+    _begin_subscription_write(conn)
+    try:
+        institution = conn.execute(
+            "SELECT id FROM institutions WHERE id = ?", (institution_id,)
+        ).fetchone()
+        if not institution:
+            raise ValueError("institution not found")
+        plan = conn.execute(
+            "SELECT id, is_active FROM platform_plans WHERE id = ?", (plan_id,)
+        ).fetchone()
+        if not plan or not plan["is_active"]:
+            raise ValueError("plan not found or inactive")
 
-    if get_current_subscription(conn, institution_id):
-        raise ValueError("institution already has an active subscription; change its status before granting another")
+        if get_current_subscription(conn, institution_id):
+            raise ValueError(
+                "institution already has an active subscription; "
+                "change its status before granting another"
+            )
 
-    now = _now()
-    subscription_id = _id()
-    conn.execute(
-        """INSERT INTO institution_subscriptions
-           (id, institution_id, plan_id, status, access_type, starts_at, ends_at,
-            granted_by, grant_reason, created_at, updated_at)
-           VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)""",
-        (subscription_id, institution_id, plan_id, access_type, start, end,
-         str(granted_by).strip(), str(reason).strip(), now, now),
-    )
-    conn.execute(
-        """INSERT INTO subscription_events
-           (id, subscription_id, institution_id, event_type, actor_id, reason, metadata_json)
-           VALUES (?, ?, ?, 'subscription_granted', ?, ?, ?)""",
-        (_id(), subscription_id, institution_id, str(granted_by).strip(),
-         str(reason).strip(), json.dumps({"access_type": access_type, "plan_id": plan_id})),
-    )
-    conn.commit()
-    return subscription_id
+        now = _now()
+        subscription_id = _id()
+        conn.execute(
+            """INSERT INTO institution_subscriptions
+               (id, institution_id, plan_id, status, access_type, starts_at, ends_at,
+                granted_by, grant_reason, created_at, updated_at)
+               VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)""",
+            (subscription_id, institution_id, plan_id, access_type, start, end,
+             str(granted_by).strip(), str(reason).strip(), now, now),
+        )
+        conn.execute(
+            """INSERT INTO subscription_events
+               (id, subscription_id, institution_id, event_type, actor_id, reason, metadata_json)
+               VALUES (?, ?, ?, 'subscription_granted', ?, ?, ?)""",
+            (_id(), subscription_id, institution_id, str(granted_by).strip(),
+             str(reason).strip(), json.dumps({"access_type": access_type, "plan_id": plan_id})),
+        )
+        conn.commit()
+        return subscription_id
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def get_current_subscription(conn, institution_id: str, *, at: str | None = None):
@@ -175,37 +201,44 @@ def feature_allowed(conn, institution_id: str, feature: str, *, at: str | None =
 def change_subscription_status(
     conn, subscription_id: str, *, status: str, actor_id: str, reason: str
 ) -> None:
-    """Change access status with an audit event; payment status must come from verified billing events."""
+    """Change access status atomically; duplicate concurrent events are no-ops."""
     if status not in VALID_STATUSES:
         raise ValueError("unsupported subscription status")
     if not str(actor_id or "").strip() or not str(reason or "").strip():
         raise ValueError("actor_id and reason are required")
-    row = conn.execute(
-        "SELECT id, institution_id, status FROM institution_subscriptions WHERE id = ?",
-        (subscription_id,),
-    ).fetchone()
-    if not row:
-        raise ValueError("subscription not found")
 
-    current_status = row["status"]
-    if status == current_status:
-        # Idempotent retries must not create duplicate lifecycle events.
-        return
-    if status not in ALLOWED_STATUS_TRANSITIONS.get(current_status, set()):
-        raise ValueError(
-            f"invalid subscription status transition: {current_status} -> {status}"
+    _begin_subscription_write(conn)
+    try:
+        row = conn.execute(
+            "SELECT id, institution_id, status FROM institution_subscriptions WHERE id = ?",
+            (subscription_id,),
+        ).fetchone()
+        if not row:
+            raise ValueError("subscription not found")
+
+        current_status = row["status"]
+        if status == current_status:
+            # Concurrent/retried same-state events do not create duplicate audit rows.
+            conn.commit()
+            return
+        if status not in ALLOWED_STATUS_TRANSITIONS.get(current_status, set()):
+            raise ValueError(
+                f"invalid subscription status transition: {current_status} -> {status}"
+            )
+
+        now = _now()
+        conn.execute(
+            "UPDATE institution_subscriptions SET status = ?, updated_at = ? WHERE id = ?",
+            (status, now, subscription_id),
         )
-
-    now = _now()
-    conn.execute(
-        "UPDATE institution_subscriptions SET status = ?, updated_at = ? WHERE id = ?",
-        (status, now, subscription_id),
-    )
-    conn.execute(
-        """INSERT INTO subscription_events
-           (id, subscription_id, institution_id, event_type, actor_id, reason, metadata_json)
-           VALUES (?, ?, ?, 'subscription_status_changed', ?, ?, ?)""",
-        (_id(), subscription_id, row["institution_id"], actor_id.strip(),
-         reason.strip(), json.dumps({"status": status})),
-    )
-    conn.commit()
+        conn.execute(
+            """INSERT INTO subscription_events
+               (id, subscription_id, institution_id, event_type, actor_id, reason, metadata_json)
+               VALUES (?, ?, ?, 'subscription_status_changed', ?, ?, ?)""",
+            (_id(), subscription_id, row["institution_id"], actor_id.strip(),
+             reason.strip(), json.dumps({"status": status})),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
