@@ -165,6 +165,16 @@ _PROTECTED_API_PREFIXES = (
     "/api/school/",)
 
 
+# School APIs are opt-in by exact Flask endpoint and HTTP method. A broad
+# /api/school/ prefix is not an authorization policy: new routes must be
+# reviewed and added here only after tenant and role checks are implemented.
+_SCHOOL_API_ROUTE_METHODS = frozenset({
+    ("school_me", "GET"),
+    ("school_classes", "GET"),
+    ("school_create_class", "POST"),
+})
+
+
 @app.before_request
 def enforce_api_security():
     # Admin APIs are always protected. Legacy mode only relaxes anonymous
@@ -215,6 +225,11 @@ def enforce_api_security():
     # reachable by a school or unknown-role session without route-level guards.
     if session.get("user") and session.get("role") == "school_user":
         if request.path.startswith("/api/school/"):
+            # Fail closed for unregistered routes and methods inside the school
+            # namespace. Otherwise a future endpoint could inherit access merely
+            # by sharing the prefix, before its tenant/RBAC policy is reviewed.
+            if (request.endpoint, request.method) not in _SCHOOL_API_ROUTE_METHODS:
+                return jsonify({"error": "school_route_not_authorized"}), 403
             # Re-check active user, institution and role assignment on every
             # school API request; never trust tenant claims from the cookie.
             if not identity.active_tenant_identity(
