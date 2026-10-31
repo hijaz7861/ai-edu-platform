@@ -8,6 +8,15 @@ import pytest
 from flask import session
 
 
+# Every school-facing route and method must be explicitly reviewed. Adding a
+# new /api/school/* endpoint without adding it here must fail the route audit.
+SCHOOL_API_ROUTE_METHODS = frozenset({
+    ("school_me", "GET"),
+    ("school_classes", "GET"),
+    ("school_create_class", "POST"),
+})
+
+
 LEGACY_PLATFORM_ROUTES = [
     ("POST", "/institutions"),
     ("POST", "/institutions/tenant-a/classes"),
@@ -161,14 +170,17 @@ def test_school_session_is_denied_from_every_registered_platform_route_and_bluep
             ),
             rule.rule,
         )
-        if (
-            path in allowed_paths
-            or path.startswith("/static/")
-            or path.startswith("/api/school/")
-        ):
+        if path in allowed_paths or path.startswith("/static/"):
             continue
 
         methods = set(rule.methods or ()) - {"HEAD", "OPTIONS"}
+        if path.startswith("/api/school/"):
+            for method in methods:
+                assert (rule.endpoint, method) in SCHOOL_API_ROUTE_METHODS, (
+                    f"{method} {path} ({rule.endpoint}) needs explicit school authorization"
+                )
+            continue
+
         for method in sorted(methods):
             response = school_session_client.open(
                 path,
@@ -186,3 +198,24 @@ def test_school_session_is_denied_from_every_registered_platform_route_and_bluep
 
     assert checked, "expected registered platform routes to be covered"
     assert blueprint_routes, "dashboard_api blueprint routes must be included in coverage"
+
+    registered_school_methods = {
+        (rule.endpoint, method)
+        for rule in app_module.app.url_map.iter_rules()
+        if rule.rule.startswith("/api/school/")
+        for method in (set(rule.methods or ()) - {"HEAD", "OPTIONS"})
+    }
+    assert registered_school_methods == SCHOOL_API_ROUTE_METHODS
+
+
+
+def test_school_session_cannot_access_unregistered_school_api_path(school_session_client):
+    response = school_session_client.get("/api/school/exports")
+    assert response.status_code == 403
+    assert response.get_json() == {"error": "school_route_not_authorized"}
+
+
+def test_school_session_cannot_use_unapproved_method_on_school_api(school_session_client):
+    response = school_session_client.post("/api/school/me", json={})
+    assert response.status_code == 403
+    assert response.get_json() == {"error": "school_route_not_authorized"}
