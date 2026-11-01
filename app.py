@@ -20,6 +20,7 @@ from services.login_throttle import clear_failures, is_locked, record_failure
 from services.api_rate_limit import allow_request
 from services.security_audit import append_security_event
 from services import identity
+from services.tenant_jobs import enqueue_job, get_tenant_job, JobAuthorizationError, IdempotencyConflict
 from providers.base import get_default_registry
 from dashboard_api import dashboard_api
 
@@ -172,6 +173,8 @@ _SCHOOL_API_ROUTE_METHODS = frozenset({
     ("school_me", "GET"),
     ("school_classes", "GET"),
     ("school_create_class", "POST"),
+    ("school_create_job", "POST"),
+    ("school_get_job", "GET"),
 })
 
 
@@ -456,6 +459,55 @@ def school_classes():
         return err("permission_denied", 403)
     rows = core.scoped_query(get_db(), "classes", session["institution_id"])
     return jsonify({"classes": [dict(row) for row in rows]})
+
+
+
+@app.post("/api/school/jobs")
+def school_create_job():
+    """Queue a tenant health check using only authenticated session identity."""
+    body = request.get_json(silent=True)
+    if body is None:
+        if request.data:
+            return err("invalid_json", 400)
+        body = {}
+    if not isinstance(body, dict) or set(body) - {"resources"}:
+        return err("unsupported_job_payload", 400)
+    try:
+        job_id, created = enqueue_job(
+            get_db(),
+            institution_id=session.get("institution_id"),
+            actor_id=session.get("user_id"),
+            job_type="tenant_health_check",
+            payload=body,
+            idempotency_key=request.headers.get("Idempotency-Key"),
+        )
+    except JobAuthorizationError:
+        return err("permission_denied", 403)
+    except IdempotencyConflict:
+        return err("idempotency_key_conflict", 409)
+    except ValueError as exc:
+        return err(str(exc), 400)
+    job = get_tenant_job(
+        get_db(), job_id=job_id, institution_id=session["institution_id"]
+    )
+    return jsonify({"id": job_id, "status": job["status"]}), 202 if created else 200
+
+
+@app.get("/api/school/jobs/<job_id>")
+def school_get_job(job_id):
+    """Return only a job belonging to the authenticated institution."""
+    permissions = identity.institution_permissions(
+        get_db(), user_id=session["user_id"],
+        institution_id=session["institution_id"],
+    )
+    if not ({"*", "manage_institution", "view_all_reports"} & permissions):
+        return err("permission_denied", 403)
+    job = get_tenant_job(
+        get_db(), job_id=job_id, institution_id=session["institution_id"]
+    )
+    if job is None:
+        return err("job_not_found", 404)
+    return jsonify(job)
 
 
 @app.post("/api/admin/school-users")

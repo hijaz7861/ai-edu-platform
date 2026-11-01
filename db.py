@@ -434,6 +434,9 @@ def get_connection(db_path: str = None) -> sqlite3.Connection:
 def init_db(db_path: str = None):
     conn = get_connection(db_path)
     conn.executescript(SCHEMA)
+    # Additive, idempotent schema for the tenant-bound worker queue.
+    from services.tenant_jobs import ensure_schema
+    ensure_schema(conn)
     # Safe additive migration for existing databases created before school-user auth.
     user_columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
     if "password_hash" not in user_columns:
