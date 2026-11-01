@@ -114,3 +114,42 @@ def test_production_keeps_only_explicit_health_routes_public(client, monkeypatch
     monkeypatch.setenv("APP_ENV", "production")
     response = client.get(path)
     assert response.status_code == 200
+
+
+
+def test_every_registered_api_route_rejects_anonymous_access_in_production(client, monkeypatch):
+    """Exercise real route matching so newly added API endpoints fail closed.
+
+    The static prefix-coverage test above catches unclassified routes; this test
+    complements it by requesting every registered API route anonymously under
+    production configuration. Only the documented status endpoint is public.
+    """
+    import re
+    import app as app_module
+
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("REQUIRE_API_AUTH", "0")
+    public_api_routes = {"/api/status"}
+
+    routes = []
+    for rule in app_module.app.url_map.iter_rules():
+        if not rule.rule.startswith("/api/") or rule.rule in public_api_routes:
+            continue
+        # Replace Flask's typed and untyped path parameters with safe test IDs.
+        path = re.sub(r"<(?:[^:<>]+:)?([^<>]+)>", "test-id", rule.rule)
+        methods = set(rule.methods or ()) - {"HEAD", "OPTIONS"}
+        method = "GET" if "GET" in methods else sorted(methods)[0]
+        routes.append((path, method))
+
+    assert routes, "expected at least one protected API route"
+    for path, method in routes:
+        response = client.open(
+            path,
+            method=method,
+            json={} if method not in {"GET", "HEAD"} else None,
+        )
+        assert response.status_code == 401, (
+            f"{method} {path} must reject anonymous production access; "
+            f"got {response.status_code}"
+        )
+        assert response.get_json() == {"error": "authentication_required"}

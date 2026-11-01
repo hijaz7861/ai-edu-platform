@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS sections (
 );
 CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY, institution_id TEXT REFERENCES institutions(id),
-    email TEXT UNIQUE NOT NULL, status TEXT DEFAULT 'active', created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    email TEXT UNIQUE NOT NULL, status TEXT DEFAULT 'active', password_hash TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS roles (
     id TEXT PRIMARY KEY, name TEXT NOT NULL, scope_level TEXT NOT NULL, permissions TEXT NOT NULL
@@ -434,6 +434,20 @@ def get_connection(db_path: str = None) -> sqlite3.Connection:
 def init_db(db_path: str = None):
     conn = get_connection(db_path)
     conn.executescript(SCHEMA)
+    # Safe additive migration for existing databases created before school-user auth.
+    user_columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+    if "password_hash" not in user_columns:
+        conn.execute("ALTER TABLE users ADD COLUMN password_hash TEXT")
+    # Enforce case-insensitive email uniqueness where legacy data permits it.
+    # Existing case-variant duplicates are not silently deleted; authentication
+    # fails closed for ambiguous emails until an operator resolves them.
+    duplicates = conn.execute(
+        "SELECT lower(email) FROM users GROUP BY lower(email) HAVING COUNT(*) > 1 LIMIT 1"
+    ).fetchone()
+    if duplicates is None:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_ci ON users(lower(email))"
+        )
     conn.commit()
     return conn
 
