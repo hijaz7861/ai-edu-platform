@@ -92,6 +92,8 @@ def ensure_schema(conn: sqlite3.Connection):
         ON tenant_jobs(status, available_at, created_at);
     CREATE INDEX IF NOT EXISTS idx_tenant_jobs_tenant_created
         ON tenant_jobs(institution_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_tenant_jobs_lease
+        ON tenant_jobs(status, lease_expires_at);
     CREATE TABLE IF NOT EXISTS tenant_job_events (
         id TEXT PRIMARY KEY,
         job_id TEXT NOT NULL REFERENCES tenant_jobs(id) ON DELETE RESTRICT,

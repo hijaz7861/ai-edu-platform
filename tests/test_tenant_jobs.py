@@ -7,7 +7,7 @@ import pytest
 from db import get_connection, init_db
 from services import core, identity
 from services.tenant_job_handlers import HANDLERS
-from services.tenant_jobs import RetryableJobError, claim_next_job, enqueue_job, get_tenant_job, run_once
+from services.tenant_jobs import (RetryableJobError, LeaseLost, _finish_success, claim_next_job, enqueue_job, get_tenant_job, run_once)
 
 
 @pytest.fixture
@@ -114,9 +114,15 @@ def test_foreign_job_is_not_disclosed_and_non_admin_is_denied(job_env):
     foreign = e["client_b"].get("/api/school/jobs/" + created.get_json()["id"])
     assert foreign.status_code == 404
     csrf_c = login(e["client_c"], e["uc"])
+    # A principal/coordinator role without manage_institution cannot read
+    # another user's job result even though the job belongs to the same tenant.
+    admin_job = e["client_a"].post("/api/school/jobs", json={"resources": ["classes"]},
+        headers={"X-CSRF-Token": csrf, "Idempotency-Key": "tenant-a-job-0005"})
     denied = e["client_c"].post("/api/school/jobs", json={"resources": ["classes"]},
-        headers={"X-CSRF-Token": csrf_c, "Idempotency-Key": "tenant-a-job-0005"})
+        headers={"X-CSRF-Token": csrf_c, "Idempotency-Key": "tenant-a-job-0006"})
     assert denied.status_code == 403
+    read_denied = e["client_c"].get("/api/school/jobs/" + admin_job.get_json()["id"])
+    assert read_denied.status_code == 403
 
 
 def test_worker_revalidates_permission_before_execution(job_env):
@@ -174,6 +180,10 @@ def test_claim_is_single_owner_and_expired_lease_is_reclaimed(job_env):
     second.commit()
     reclaimed = claim_next_job(second, "worker-two", lease_seconds=30)
     assert reclaimed["id"] == job_id and reclaimed["attempt_count"] == 2
+    # The old worker cannot publish a result after another worker reclaimed its lease.
+    with pytest.raises(LeaseLost):
+        _finish_success(first, job_id=job_id, worker_id="worker-one",
+                        result_json='{"stale":true}')
     first.close()
     second.close()
 
