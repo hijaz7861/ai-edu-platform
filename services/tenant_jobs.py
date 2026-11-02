@@ -5,7 +5,8 @@ import json
 import re
 import sqlite3
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Callable
 from datetime import datetime, timedelta, timezone
 from services import identity
 
@@ -48,6 +49,11 @@ class TenantJobContext:
     actor_id: str
     job_type: str
     payload: dict
+    _renew_lease: Callable[[], str] = field(repr=False, compare=False)
+
+    def heartbeat(self) -> str:
+        """Renew this worker's active lease or raise LeaseLost if ownership expired."""
+        return self._renew_lease()
 
 
 def _utcnow():
@@ -306,6 +312,37 @@ def _owned_job(conn, job_id, worker_id):
     ).fetchone()
 
 
+def renew_job_lease(conn, job_id, worker_id, *, lease_seconds=120):
+    """Cooperatively extend a live lease without allowing an expired worker to revive it."""
+    if conn.in_transaction:
+        raise ValueError("connection_has_open_transaction")
+    if (isinstance(lease_seconds, bool) or not isinstance(lease_seconds, int)
+            or not 30 <= lease_seconds <= 300):
+        raise ValueError("lease_seconds_must_be_between_30_and_300")
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if _owned_job(conn, job_id, worker_id) is None:
+            raise LeaseLost("worker_lease_lost")
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat()
+        lease_until = (now_dt + timedelta(seconds=lease_seconds)).isoformat()
+        changed = conn.execute(
+            """UPDATE tenant_jobs
+               SET lease_expires_at=?, updated_at=?
+               WHERE id=? AND status='running' AND locked_by=?
+                 AND lease_expires_at > ?""",
+            (lease_until, now, job_id, worker_id, now),
+        ).rowcount
+        if changed != 1:
+            raise LeaseLost("worker_lease_lost")
+        conn.commit()
+        return lease_until
+    except Exception:
+        conn.rollback()
+        raise
+
+
 def _finish_success(conn, *, job_id, worker_id, result_json):
     if conn.in_transaction:
         conn.rollback()
@@ -405,6 +442,9 @@ def run_once(conn, worker_id, handlers, *, lease_seconds=120):
             job_id=job_id, institution_id=job["institution_id"],
             actor_id=job["actor_id"], job_type=job["job_type"],
             payload=json.loads(job["payload_json"]),
+            _renew_lease=lambda: renew_job_lease(
+                conn, job_id, worker_id, lease_seconds=lease_seconds
+            ),
         )
         result = handler(conn, context)
         if conn.in_transaction:
