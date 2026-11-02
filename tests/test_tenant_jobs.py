@@ -256,16 +256,16 @@ def test_school_route_permissions_match_institution_role_matrix(job_env):
     admin_job_id = admin_job.get_json()["id"]
 
     roles = [
-        ("Institution Admin", e["ua"], True, True),
-        ("Principal", None, True, False),
-        ("Academic Coordinator", None, False, False),
-        ("Examiner", None, False, False),
-        ("HR/Attendance Officer", None, False, False),
+        ("Institution Admin", e["ua"], True, True, True),
+        ("Principal", None, True, True, False),
+        ("Academic Coordinator", None, True, False, False),
+        ("Examiner", None, False, False, False),
+        ("HR/Attendance Officer", None, False, False, False),
     ]
     conn = init_db(e["path"])
     users = []
     suffix = uuid.uuid4().hex[:10]
-    for index, (role_name, existing_user, can_view, can_manage) in enumerate(roles):
+    for index, (role_name, existing_user, can_view_classes, can_read_jobs, can_manage) in enumerate(roles):
         user = existing_user or identity.create_school_user(
             conn,
             email=f"role-{index}-{suffix}@school.example",
@@ -274,10 +274,10 @@ def test_school_route_permissions_match_institution_role_matrix(job_env):
             role_name=role_name,
             granted_by="platform-admin",
         )
-        users.append((role_name, user, can_view, can_manage))
+        users.append((role_name, user, can_view_classes, can_read_jobs, can_manage))
     conn.close()
 
-    for index, (role_name, user, can_view, can_manage) in enumerate(users):
+    for index, (role_name, user, can_view_classes, can_read_jobs, can_manage) in enumerate(users):
         client = e["app"].app.test_client()
         csrf = login(client, user)
 
@@ -285,7 +285,7 @@ def test_school_route_permissions_match_institution_role_matrix(job_env):
         assert client.get("/api/school/me").status_code == 200
 
         classes = client.get("/api/school/classes")
-        assert classes.status_code == (200 if can_view else 403), role_name
+        assert classes.status_code == (200 if can_view_classes else 403), role_name
 
         create_class = client.post(
             "/api/school/classes",
@@ -305,7 +305,7 @@ def test_school_route_permissions_match_institution_role_matrix(job_env):
         assert create_job.status_code == (202 if can_manage else 403), role_name
 
         read_job = client.get("/api/school/jobs/" + admin_job_id)
-        assert read_job.status_code == (200 if can_view else 403), role_name
+        assert read_job.status_code == (200 if can_read_jobs else 403), role_name
 
 
 def test_only_explicit_retryable_failure_is_retried(job_env):
