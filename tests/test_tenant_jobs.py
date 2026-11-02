@@ -7,7 +7,7 @@ import pytest
 from db import get_connection, init_db
 from services import core, identity
 from services.tenant_job_handlers import HANDLERS
-from services.tenant_jobs import (RetryableJobError, LeaseLost, _finish_success, claim_next_job, enqueue_job, get_tenant_job, run_once)
+from services.tenant_jobs import (RetryableJobError, LeaseLost, _finish_success, claim_next_job, enqueue_job, get_tenant_job, renew_job_lease, run_once)
 
 
 @pytest.fixture
