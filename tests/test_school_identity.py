@@ -189,7 +189,16 @@ def test_platform_scope_role_does_not_grant_school_api_permissions(school_app):
 
     client = school_app["client"]
     _login(client, school_app["user"])
-    response = client.get("/api/school/classes")
+    with client.session_transaction() as session:
+        csrf_token = session["csrf_token"]
+    # Academic Coordinator's institution-scoped manage_curriculum permission
+    # may list classes, but a platform-scoped wildcard must not grant the
+    # separate manage_institution permission needed to create them.
+    response = client.post(
+        "/api/school/classes",
+        json={"name": "Platform wildcard must not create classes"},
+        headers={"X-CSRF-Token": csrf_token},
+    )
     assert response.status_code == 403
     assert response.get_json()["error"] == "permission_denied"
 
