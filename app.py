@@ -455,7 +455,9 @@ def school_classes():
         get_db(), user_id=session["user_id"],
         institution_id=session["institution_id"],
     )
-    if not ({"*", "manage_institution", "view_all_reports"} & permissions):
+    # Academic Coordinators need read access to classes to perform their
+    # institution-scoped curriculum-management role.
+    if not ({"*", "manage_institution", "view_all_reports", "manage_curriculum"} & permissions):
         return err("permission_denied", 403)
     rows = core.scoped_query(get_db(), "classes", session["institution_id"])
     return jsonify({"classes": [dict(row) for row in rows]})
