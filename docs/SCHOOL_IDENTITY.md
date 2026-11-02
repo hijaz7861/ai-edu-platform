@@ -30,3 +30,24 @@ X-CSRF-Token: <session-csrf-token>
 ## Remaining limitations — not launch-ready by itself
 
 This is a bounded first implementation, not a claim of complete production identity management. Password recovery, invitation/verification emails, MFA, account lockout policy review, session revocation/versioning, audit events for user provisioning, institution-admin user management UI, class/department role enforcement, route-by-route permission mapping for institution roles, and tenant-scoped authorization for future school-facing legacy APIs remain outstanding. The regression suite now enumerates every registered Flask route and dashboard blueprint method and denies school-session access outside the explicit school/public allowlist; this is a boundary test, not proof that every platform-admin data query is institution-scoped. Existing legacy APIs continue to be platform-admin-only; they must not be exposed to school sessions until each route has explicit tenant and permission checks. A real production launch still requires full regression CI, deployment-specific secrets, database/backups/restore drills, monitoring, and live staging verification.
+
+## Current school API permission matrix
+
+The following table describes only the school routes currently implemented.
+All authenticated institution roles may read their own `/api/school/me`
+profile. Class listing is tenant-scoped and permits Institution Admin,
+Principal and Academic Coordinator (`manage_curriculum`). Class creation and
+job enqueue require `manage_institution`. Job status is tenant-scoped and
+permits Institution Admin and Principal (`view_all_reports`).
+
+| Institution role | Read own profile | List own classes | Create class | Enqueue job | Read tenant job |
+| --- | --- | --- | --- | --- | --- |
+| Institution Admin | Yes | Yes | Yes | Yes | Yes |
+| Principal | Yes | Yes | No | No | Yes |
+| Academic Coordinator | Yes | Yes | No | No | No |
+| Examiner | Yes | No | No | No | No |
+| HR/Attendance Officer | Yes | No | No | No | No |
+
+This is not a blanket permission for future endpoints. New routes and methods
+remain denied until explicitly added to the exact route allowlist and covered
+by tenant, entitlement and role-negative tests.
