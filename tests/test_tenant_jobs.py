@@ -245,6 +245,69 @@ def test_expired_worker_cannot_revive_lease_and_heartbeat_rejects_open_transacti
     conn.close()
 
 
+def test_school_route_permissions_match_institution_role_matrix(job_env):
+    e = job_env
+    admin_csrf = login(e["client_a"], e["ua"])
+    admin_job = e["client_a"].post(
+        "/api/school/jobs", json={"resources": ["classes"]},
+        headers={"X-CSRF-Token": admin_csrf, "Idempotency-Key": "role-matrix-admin-job"},
+    )
+    assert admin_job.status_code == 202
+    admin_job_id = admin_job.get_json()["id"]
+
+    roles = [
+        ("Institution Admin", e["ua"], True, True),
+        ("Principal", None, True, False),
+        ("Academic Coordinator", None, False, False),
+        ("Examiner", None, False, False),
+        ("HR/Attendance Officer", None, False, False),
+    ]
+    conn = init_db(e["path"])
+    users = []
+    suffix = uuid.uuid4().hex[:10]
+    for index, (role_name, existing_user, can_view, can_manage) in enumerate(roles):
+        user = existing_user or identity.create_school_user(
+            conn,
+            email=f"role-{index}-{suffix}@school.example",
+            password="correct horse battery staple",
+            institution_id=e["a"],
+            role_name=role_name,
+            granted_by="platform-admin",
+        )
+        users.append((role_name, user, can_view, can_manage))
+    conn.close()
+
+    for index, (role_name, user, can_view, can_manage) in enumerate(users):
+        client = e["app"].app.test_client()
+        csrf = login(client, user)
+
+        # Self-profile is safe for every authenticated institution role.
+        assert client.get("/api/school/me").status_code == 200
+
+        classes = client.get("/api/school/classes")
+        assert classes.status_code == (200 if can_view else 403), role_name
+
+        create_class = client.post(
+            "/api/school/classes",
+            json={"name": f"RBAC {role_name} {index}", "academic_year": "2026-2027"},
+            headers={"X-CSRF-Token": csrf},
+        )
+        assert create_class.status_code == (201 if can_manage else 403), role_name
+
+        create_job = client.post(
+            "/api/school/jobs",
+            json={"resources": ["classes"]},
+            headers={
+                "X-CSRF-Token": csrf,
+                "Idempotency-Key": f"role-matrix-job-{index:02d}",
+            },
+        )
+        assert create_job.status_code == (202 if can_manage else 403), role_name
+
+        read_job = client.get("/api/school/jobs/" + admin_job_id)
+        assert read_job.status_code == (200 if can_view else 403), role_name
+
+
 def test_only_explicit_retryable_failure_is_retried(job_env):
     e = job_env
     conn = init_db(e["path"])
