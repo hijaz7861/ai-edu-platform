@@ -188,6 +188,63 @@ def test_claim_is_single_owner_and_expired_lease_is_reclaimed(job_env):
     second.close()
 
 
+def test_worker_context_heartbeat_renews_only_its_live_lease(job_env):
+    e = job_env
+    conn = init_db(e["path"])
+    job_id, _ = enqueue(conn, e["a"], e["ua"], "worker-heartbeat-0001", ["classes"])
+    observed = {}
+
+    def handler(_conn, context):
+        before = conn.execute(
+            "SELECT lease_expires_at FROM tenant_jobs WHERE id=?", (job_id,)
+        ).fetchone()["lease_expires_at"]
+        renewed = context.heartbeat()
+        after = conn.execute(
+            "SELECT lease_expires_at FROM tenant_jobs WHERE id=?", (job_id,)
+        ).fetchone()["lease_expires_at"]
+        observed.update(before=before, renewed=renewed, after=after)
+        with pytest.raises(LeaseLost):
+            renew_job_lease(conn, job_id, "different-worker", lease_seconds=30)
+        return {"heartbeat": "verified"}
+
+    result = run_once(
+        conn, "worker-heartbeat-owner", {"tenant_health_check": handler},
+        lease_seconds=30,
+    )
+    assert result == {"job_id": job_id, "status": "succeeded"}
+    assert observed["renewed"] == observed["after"]
+    assert observed["after"] > observed["before"]
+    conn.close()
+
+
+def test_expired_worker_cannot_revive_lease_and_heartbeat_rejects_open_transaction(job_env):
+    e = job_env
+    conn = init_db(e["path"])
+    job_id, _ = enqueue(conn, e["a"], e["ua"], "worker-heartbeat-0002", ["classes"])
+    claim = claim_next_job(conn, "worker-old", lease_seconds=30)
+    assert claim["id"] == job_id
+
+    conn.execute(
+        "UPDATE tenant_jobs SET lease_expires_at=? WHERE id=?",
+        ("2000-01-01T00:00:00+00:00", job_id),
+    )
+    conn.commit()
+    with pytest.raises(LeaseLost):
+        renew_job_lease(conn, job_id, "worker-old", lease_seconds=30)
+
+    reclaimed = claim_next_job(conn, "worker-new", lease_seconds=30)
+    assert reclaimed["id"] == job_id
+    with pytest.raises(LeaseLost):
+        renew_job_lease(conn, job_id, "worker-old", lease_seconds=30)
+    assert renew_job_lease(conn, job_id, "worker-new", lease_seconds=30)
+
+    conn.execute("BEGIN")
+    with pytest.raises(ValueError, match="connection_has_open_transaction"):
+        renew_job_lease(conn, job_id, "worker-new", lease_seconds=30)
+    conn.rollback()
+    conn.close()
+
+
 def test_only_explicit_retryable_failure_is_retried(job_env):
     e = job_env
     conn = init_db(e["path"])
