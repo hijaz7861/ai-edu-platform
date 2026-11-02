@@ -32,3 +32,21 @@ The default performs one pass and exits. The loop option is intended for a dedic
 - OCR/AI/connector/payment/notification handlers are not registered.
 - Long-running jobs need lease heartbeat, cancellation and per-side-effect authorization/idempotency.
 - Versioned migrations, off-site backup/restore, worker metrics/alerts, graceful shutdown and multi-node queue support remain outstanding.
+
+## Cooperative lease heartbeat
+
+Long-running handlers must call `context.heartbeat()` between bounded stages and
+before/after any external side effect. The call extends the current worker's
+lease only while that worker still owns an unexpired lease. It raises
+`LeaseLost` if the lease expired, was reclaimed, or belongs to another worker;
+an expired worker cannot revive its old lease.
+
+Heartbeat is cooperative, not a background thread. A handler blocked inside a
+non-cooperative network or native call can still lose its lease. Such handlers
+must use bounded I/O timeouts, idempotency keys for each external side effect,
+and check/renew ownership before publishing results. A heartbeat cannot make
+an already-issued external side effect exactly-once.
+
+The worker still uses a local SQLite database in this repository. A shared
+multi-host queue, production scheduler, cancellation protocol, lease metrics,
+and independently operated worker process remain release blockers.
