@@ -41,8 +41,14 @@ def add_security_headers(response):
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
     response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
-    if request.path == "/" or request.path.startswith(("/auth/", "/admin/", "/api/admin/")):
+    # Dynamic application responses can contain tenant, identity, assessment,
+    # billing, or provider data. Do not let browsers or intermediary caches
+    # retain them, including non-admin legacy routes and school APIs.
+    # Static assets remain cacheable so normal asset caching is unaffected.
+    if not request.path.startswith("/static/"):
         response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
     return response
 
 
