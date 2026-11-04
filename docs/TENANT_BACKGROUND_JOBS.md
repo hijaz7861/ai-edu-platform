@@ -26,12 +26,26 @@ AI_EDU_DB=/path/to/platform.db python tools/run_tenant_jobs.py --loop --poll-int
 
 The default performs one pass and exits. The loop option is intended for a dedicated worker process. No production worker process or scheduler is configured by this PR. SQLite is a single-host reference queue, not a multi-host distributed queue; multi-instance deployment requires a shared transactional database, connection pooling, migration work and lease heartbeat/cancellation design.
 
+## Additive SQLite migrations — partial implementation
+
+`db.init_db()` now serializes the idempotent base-schema bootstrap with `BEGIN IMMEDIATE` and a 10-second SQLite busy timeout. Additive upgrades are recorded in the append-only `schema_migrations` ledger and applied under a separate write transaction.
+
+The current numbered migrations cover:
+
+1. `users.password_hash` for databases created before school-user password authentication.
+2. The tenant job and append-only job-event tables, indexes and triggers.
+
+Migration code and its ledger entry commit atomically. Repeated initialization is idempotent. Existing case-variant duplicate emails are preserved; the case-insensitive unique index is installed only after duplicates are resolved. CI regressions cover legacy upgrade, repeated startup, duplicate preservation/reconciliation and four concurrent initializers.
+
+This is not yet a complete migration history for every table in the original base schema, nor does it provide a migration path from SQLite to a production server database. Those remain release blockers.
+
 ## Remaining production gates
 
 - No production/staging worker process or scheduler is configured.
 - OCR/AI/connector/payment/notification handlers are not registered.
-- Long-running jobs need lease heartbeat, cancellation and per-side-effect authorization/idempotency.
-- Versioned migrations, off-site backup/restore, worker metrics/alerts, graceful shutdown and multi-node queue support remain outstanding.
+- Long-running jobs need cancellation, graceful shutdown and per-side-effect authorization/idempotency.
+- Full versioned migration coverage for the entire base schema and future schema changes remains outstanding.
+- Off-site backup/restore, worker metrics/alerts and multi-node queue support remain outstanding.
 
 ## Cooperative lease heartbeat
 
