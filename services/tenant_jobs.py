@@ -65,8 +65,8 @@ def _json(value):
                       separators=(",", ":"), allow_nan=False)
 
 
-def ensure_schema(conn: sqlite3.Connection):
-    conn.executescript("""
+_TENANT_JOB_SCHEMA_STATEMENTS = (
+    """
     CREATE TABLE IF NOT EXISTS tenant_jobs (
         id TEXT PRIMARY KEY,
         institution_id TEXT NOT NULL REFERENCES institutions(id) ON DELETE RESTRICT,
@@ -93,13 +93,15 @@ def ensure_schema(conn: sqlite3.Connection):
             OR
             (status <> 'running' AND locked_by IS NULL AND lease_expires_at IS NULL)
         )
-    );
-    CREATE INDEX IF NOT EXISTS idx_tenant_jobs_claim
-        ON tenant_jobs(status, available_at, created_at);
-    CREATE INDEX IF NOT EXISTS idx_tenant_jobs_tenant_created
-        ON tenant_jobs(institution_id, created_at);
-    CREATE INDEX IF NOT EXISTS idx_tenant_jobs_lease
-        ON tenant_jobs(status, lease_expires_at);
+    )
+    """,
+    """CREATE INDEX IF NOT EXISTS idx_tenant_jobs_claim
+       ON tenant_jobs(status, available_at, created_at)""",
+    """CREATE INDEX IF NOT EXISTS idx_tenant_jobs_tenant_created
+       ON tenant_jobs(institution_id, created_at)""",
+    """CREATE INDEX IF NOT EXISTS idx_tenant_jobs_lease
+       ON tenant_jobs(status, lease_expires_at)""",
+    """
     CREATE TABLE IF NOT EXISTS tenant_job_events (
         id TEXT PRIMARY KEY,
         job_id TEXT NOT NULL REFERENCES tenant_jobs(id) ON DELETE RESTRICT,
@@ -111,21 +113,33 @@ def ensure_schema(conn: sqlite3.Connection):
         )),
         detail_json TEXT NOT NULL DEFAULT '{}',
         created_at TEXT NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_tenant_job_events_job
-        ON tenant_job_events(job_id, created_at);
-    CREATE INDEX IF NOT EXISTS idx_tenant_job_events_tenant
-        ON tenant_job_events(institution_id, created_at);
+    )
+    """,
+    """CREATE INDEX IF NOT EXISTS idx_tenant_job_events_job
+       ON tenant_job_events(job_id, created_at)""",
+    """CREATE INDEX IF NOT EXISTS idx_tenant_job_events_tenant
+       ON tenant_job_events(institution_id, created_at)""",
+    """
     CREATE TRIGGER IF NOT EXISTS tenant_job_events_no_update
     BEFORE UPDATE ON tenant_job_events BEGIN
         SELECT RAISE(ABORT, 'tenant job events are append-only');
-    END;
+    END
+    """,
+    """
     CREATE TRIGGER IF NOT EXISTS tenant_job_events_no_delete
     BEFORE DELETE ON tenant_job_events BEGIN
         SELECT RAISE(ABORT, 'tenant job events are append-only');
-    END;
-    """)
-    conn.commit()
+    END
+    """,
+)
+
+
+def ensure_schema(conn: sqlite3.Connection, *, commit: bool = True):
+    """Create the worker schema; callers may include it in a migration transaction."""
+    for statement in _TENANT_JOB_SCHEMA_STATEMENTS:
+        conn.execute(statement)
+    if commit:
+        conn.commit()
 
 
 def _normalise_payload(payload):
