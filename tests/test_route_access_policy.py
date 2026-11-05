@@ -13,7 +13,7 @@ def test_every_registered_route_method_has_an_explicit_access_policy():
         registered.setdefault(rule.endpoint, set()).update(methods)
 
     policies = app_module._ROUTE_ACCESS_POLICIES
-    assert set(registered) == set(policies) | {"static"} if "static" not in registered else set(registered) == set(policies)
+    assert set(registered) == set(policies)
     for endpoint, methods in registered.items():
         access_class, approved_methods = policies[endpoint]
         assert access_class in {"public", "authenticated", "school_user", "platform_admin"}
