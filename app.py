@@ -184,6 +184,72 @@ _SCHOOL_API_ROUTE_METHODS = frozenset({
 })
 
 
+# Every registered route is classified by endpoint and HTTP method. Legacy
+# business APIs intentionally remain platform-admin-only until they receive
+# an institution-bound identity and a reviewed per-role data-access policy.
+# This is a fail-closed inventory: adding a route or method requires an
+# explicit classification here and a corresponding regression update.
+_ROUTE_ACCESS_POLICIES = {
+    "static": ("public", frozenset({"GET"})),
+    "home": ("public", frozenset({"GET"})),
+    "login": ("public", frozenset({"POST"})),
+    "school_login": ("public", frozenset({"POST"})),
+    "school_dashboard": ("public", frozenset({"GET"})),
+    "health": ("public", frozenset({"GET"})),
+    "api_status": ("public", frozenset({"GET"})),
+    "logout": ("authenticated", frozenset({"POST"})),
+    "school_me": ("school_user", frozenset({"GET"})),
+    "school_classes": ("school_user", frozenset({"GET"})),
+    "school_create_class": ("school_user", frozenset({"POST"})),
+    "school_create_job": ("school_user", frozenset({"POST"})),
+    "school_get_job": ("school_user", frozenset({"GET"})),
+    "admin_subscriptions_page": ("platform_admin", frozenset({"GET"})),
+    "connected_systems_admin_page": ("platform_admin", frozenset({"GET"})),
+    "admin_create_school_user": ("platform_admin", frozenset({"POST"})),
+    "create_institution": ("platform_admin", frozenset({"POST"})),
+    "create_class": ("platform_admin", frozenset({"POST"})),
+    "list_classes": ("platform_admin", frozenset({"GET"})),
+    "teacher_check_in": ("platform_admin", frozenset({"POST"})),
+    "teacher_check_out": ("platform_admin", frozenset({"POST"})),
+    "generate_question": ("platform_admin", frozenset({"POST"})),
+    "find_duplicates": ("platform_admin", frozenset({"POST"})),
+    "coverage_gaps": ("platform_admin", frozenset({"POST"})),
+    "generate_exam": ("platform_admin", frozenset({"POST"})),
+    "create_approval_gate": ("platform_admin", frozenset({"POST"})),
+    "decide_approval_gate": ("platform_admin", frozenset({"POST"})),
+    "select_provider": ("platform_admin", frozenset({"GET"})),
+    "list_connected_systems": ("platform_admin", frozenset({"GET"})),
+    "register_connected_system": ("platform_admin", frozenset({"POST"})),
+    "test_connected_system": ("platform_admin", frozenset({"POST"})),
+    "change_connected_system_status": ("platform_admin", frozenset({"POST"})),
+    "dashboard_api.dashboard_stats": ("platform_admin", frozenset({"GET"})),
+    "dashboard_api.list_institutions": ("platform_admin", frozenset({"GET"})),
+    "dashboard_api.list_classes": ("platform_admin", frozenset({"GET"})),
+    "dashboard_api.list_question_banks": ("platform_admin", frozenset({"GET"})),
+    "dashboard_api.list_exams": ("platform_admin", frozenset({"GET"})),
+    "dashboard_api.list_approval_gates": ("platform_admin", frozenset({"GET"})),
+    "dashboard_api.admin_list_plans": ("platform_admin", frozenset({"GET"})),
+    "dashboard_api.admin_create_plan": ("platform_admin", frozenset({"POST"})),
+    "dashboard_api.admin_list_subscriptions": ("platform_admin", frozenset({"GET"})),
+    "dashboard_api.admin_grant_subscription": ("platform_admin", frozenset({"POST"})),
+    "dashboard_api.admin_update_subscription_status": ("platform_admin", frozenset({"POST"})),
+}
+
+
+def _route_access_class(endpoint, method):
+    """Return a reviewed route class, or 'unclassified' for unknown methods/routes."""
+    policy = _ROUTE_ACCESS_POLICIES.get(endpoint)
+    if policy is None:
+        return "unclassified"
+    access_class, methods = policy
+    if method == "HEAD" and "GET" in methods:
+        return access_class
+    if method == "OPTIONS":
+        return access_class
+    return access_class if method in methods else "unclassified"
+
+
+
 @app.before_request
 def enforce_api_security():
     # Admin APIs are always protected. Legacy mode only relaxes anonymous
@@ -262,6 +328,29 @@ def enforce_api_security():
         if request.path in safe_session_routes or request.path.startswith("/static/"):
             return None
         return jsonify({"error": "platform_admin_required"}), 403
+
+    # Route inventory is independent of URL-prefix protection. A future
+    # endpoint or newly added method cannot inherit the development legacy
+    # bypass merely because it sits outside a known prefix. School APIs also
+    # require an actual school identity; a platform-admin cookie is not a
+    # substitute for an institution-bound user/session.
+    if request.endpoint is not None:
+        route_access = _route_access_class(request.endpoint, request.method)
+        if route_access == "unclassified":
+            return jsonify({"error": "route_access_policy_missing"}), 403
+        if route_access == "school_user" and session.get("role") != "school_user":
+            if not session.get("user"):
+                return jsonify({"error": "authentication_required"}), 401
+            return jsonify({"error": "school_identity_required"}), 403
+        if route_access == "authenticated" and not session.get("user"):
+            return jsonify({"error": "authentication_required"}), 401
+        if (
+            route_access == "platform_admin"
+            and not session.get("user")
+            and (must_protect or production_mode)
+            and not (legacy_mode and not is_admin_api and must_protect)
+        ):
+            return jsonify({"error": "authentication_required"}), 401
 
     if not must_protect:
         return None
