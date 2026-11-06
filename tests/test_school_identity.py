@@ -386,3 +386,117 @@ def test_active_school_session_is_revoked_after_identity_or_scope_change(school_
     with client.session_transaction() as session:
         assert "user" not in session
         assert "institution_id" not in session
+
+
+def _seed_school_academic_read_rows(school_app):
+    conn = init_db(school_app["db_path"])
+    conn.executemany(
+        "INSERT INTO question_banks (id, institution_id, name, status) VALUES (?, ?, ?, 'active')",
+        [
+            ("bank-tenant-a", school_app["institution_a"], "Tenant A bank"),
+            ("bank-tenant-b", school_app["institution_b"], "Tenant B bank"),
+        ],
+    )
+    conn.executemany(
+        """INSERT INTO exam_blueprints
+           (id, institution_id, total_marks, duration_minutes, language, status)
+           VALUES (?, ?, ?, ?, ?, 'draft')""",
+        [
+            ("blueprint-tenant-a", school_app["institution_a"], 50, 60, "en"),
+            ("blueprint-tenant-b", school_app["institution_b"], 80, 90, "ur"),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_school_academic_reads_are_tenant_scoped_and_ignore_client_tenant_selector(school_app):
+    _seed_school_academic_read_rows(school_app)
+    client = school_app["client"]
+    _login(client, school_app["user"])
+    foreign_tenant = school_app["institution_b"]
+
+    banks = client.get(
+        "/api/school/question-banks",
+        query_string={"institution_id": foreign_tenant},
+    )
+    assert banks.status_code == 200
+    bank_rows = banks.get_json()["question_banks"]
+    assert [row["id"] for row in bank_rows] == ["bank-tenant-a"]
+    assert set(bank_rows[0]) == {"id", "name", "class_id", "subject_id", "book_id", "status"}
+
+    blueprints = client.get(
+        "/api/school/exam-blueprints",
+        query_string={"institution_id": foreign_tenant},
+    )
+    assert blueprints.status_code == 200
+    blueprint_rows = blueprints.get_json()["exam_blueprints"]
+    assert [row["id"] for row in blueprint_rows] == ["blueprint-tenant-a"]
+    assert set(blueprint_rows[0]) == {
+        "id", "class_id", "subject_id", "book_id", "total_marks",
+        "duration_minutes", "language", "status", "created_at",
+    }
+
+
+def test_school_academic_reads_enforce_least_privilege_role_matrix(school_app):
+    _seed_school_academic_read_rows(school_app)
+    conn = init_db(school_app["db_path"])
+    roles = core.seed_default_roles(conn)
+    suffix = uuid.uuid4().hex[:10]
+    cases = [
+        ("Institution Admin", school_app["user"], True, True),
+        ("Principal", None, False, True),
+        ("Academic Coordinator", None, True, True),
+        ("Examiner", None, True, True),
+        ("HR/Attendance Officer", None, False, False),
+    ]
+    users = []
+    for index, (role_name, existing_user, can_read_banks, can_read_blueprints) in enumerate(cases):
+        user = existing_user or identity.create_school_user(
+            conn,
+            email=f"academic-read-{index}-{suffix}@school.example",
+            password="correct horse battery staple",
+            institution_id=school_app["institution_a"],
+            role_name=role_name,
+            granted_by="platform-admin",
+        )
+        if role_name == "HR/Attendance Officer":
+            # A platform wildcard must never leak into institution permissions.
+            core.assign_role(
+                conn, user["id"], roles["Super Admin"], "platform", "platform",
+                granted_by="platform-admin",
+            )
+        users.append((role_name, user, can_read_banks, can_read_blueprints))
+    conn.close()
+
+    for role_name, user, can_read_banks, can_read_blueprints in users:
+        client = school_app["app"].app.test_client()
+        _login(client, user)
+        banks = client.get("/api/school/question-banks")
+        blueprints = client.get("/api/school/exam-blueprints")
+        assert banks.status_code == (200 if can_read_banks else 403), role_name
+        assert blueprints.status_code == (200 if can_read_blueprints else 403), role_name
+        if not can_read_banks:
+            assert banks.get_json()["error"] == "permission_denied"
+        if not can_read_blueprints:
+            assert blueprints.get_json()["error"] == "permission_denied"
+
+
+@pytest.mark.parametrize(
+    ("path", "feature"),
+    [
+        ("/api/school/question-banks", "question_bank_analysis"),
+        ("/api/school/exam-blueprints", "exam_generation"),
+    ],
+)
+def test_school_academic_reads_fail_closed_without_active_entitlement(
+    school_app, monkeypatch, path, feature
+):
+    _seed_school_academic_read_rows(school_app)
+    client = school_app["client"]
+    _login(client, school_app["user"])
+    monkeypatch.setenv("APP_ENV", "production")
+
+    response = client.get(path)
+    assert response.status_code == 403
+    assert response.get_json() == {"error": "subscription_required"}
