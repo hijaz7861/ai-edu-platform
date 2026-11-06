@@ -14,6 +14,8 @@ SCHOOL_API_ROUTE_METHODS = frozenset({
     ("school_me", "GET"),
     ("school_classes", "GET"),
     ("school_create_class", "POST"),
+    ("school_question_banks", "GET"),
+    ("school_exam_blueprints", "GET"),
     ("school_create_job", "POST"),
     ("school_get_job", "GET"),
 })
