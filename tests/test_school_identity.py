@@ -423,7 +423,7 @@ def test_school_academic_reads_are_tenant_scoped_and_ignore_client_tenant_select
     assert banks.status_code == 200
     bank_rows = banks.get_json()["question_banks"]
     assert [row["id"] for row in bank_rows] == ["bank-tenant-a"]
-    assert set(bank_rows[0]) == {"id", "name", "class_id", "subject_id", "book_id", "status"}
+    assert set(bank_rows[0]) == {"id", "name", "status"}
 
     blueprints = client.get(
         "/api/school/exam-blueprints",
@@ -433,8 +433,7 @@ def test_school_academic_reads_are_tenant_scoped_and_ignore_client_tenant_select
     blueprint_rows = blueprints.get_json()["exam_blueprints"]
     assert [row["id"] for row in blueprint_rows] == ["blueprint-tenant-a"]
     assert set(blueprint_rows[0]) == {
-        "id", "class_id", "subject_id", "book_id", "total_marks",
-        "duration_minutes", "language", "status", "created_at",
+        "id", "total_marks", "duration_minutes", "language", "status", "created_at",
     }
 
 
