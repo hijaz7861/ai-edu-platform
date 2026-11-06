@@ -577,7 +577,7 @@ def school_question_banks():
         return access_error
 
     rows = get_db().execute(
-        """SELECT id, name, class_id, subject_id, book_id, status
+        """SELECT id, name, status
            FROM question_banks
            WHERE institution_id = ?
            ORDER BY name, id
@@ -601,8 +601,7 @@ def school_exam_blueprints():
         return access_error
 
     rows = get_db().execute(
-        """SELECT id, class_id, subject_id, book_id, total_marks,
-                  duration_minutes, language, status, created_at
+        """SELECT id, total_marks, duration_minutes, language, status, created_at
            FROM exam_blueprints
            WHERE institution_id = ?
            ORDER BY created_at DESC, id
