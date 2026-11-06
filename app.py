@@ -179,6 +179,8 @@ _SCHOOL_API_ROUTE_METHODS = frozenset({
     ("school_me", "GET"),
     ("school_classes", "GET"),
     ("school_create_class", "POST"),
+    ("school_question_banks", "GET"),
+    ("school_exam_blueprints", "GET"),
     ("school_create_job", "POST"),
     ("school_get_job", "GET"),
 })
@@ -201,6 +203,8 @@ _ROUTE_ACCESS_POLICIES = {
     "school_me": ("school_user", frozenset({"GET"})),
     "school_classes": ("school_user", frozenset({"GET"})),
     "school_create_class": ("school_user", frozenset({"POST"})),
+    "school_question_banks": ("school_user", frozenset({"GET"})),
+    "school_exam_blueprints": ("school_user", frozenset({"GET"})),
     "school_create_job": ("school_user", frozenset({"POST"})),
     "school_get_job": ("school_user", frozenset({"GET"})),
     "admin_subscriptions_page": ("platform_admin", frozenset({"GET"})),
@@ -557,6 +561,55 @@ def school_classes():
     rows = core.scoped_query(get_db(), "classes", session["institution_id"])
     return jsonify({"classes": [dict(row) for row in rows]})
 
+
+
+@app.get("/api/school/question-banks")
+def school_question_banks():
+    """List only the authenticated institution's question-bank metadata."""
+    institution_id = session["institution_id"]
+    permissions = identity.institution_permissions(
+        get_db(), user_id=session["user_id"], institution_id=institution_id
+    )
+    if not ({"*", "manage_institution", "manage_curriculum", "verify_questions"} & permissions):
+        return err("permission_denied", 403)
+    access_error = _require_feature_access(institution_id, "question_bank_analysis")
+    if access_error:
+        return access_error
+
+    rows = get_db().execute(
+        """SELECT id, name, class_id, subject_id, book_id, status
+           FROM question_banks
+           WHERE institution_id = ?
+           ORDER BY name, id
+           LIMIT 200""",
+        (institution_id,),
+    ).fetchall()
+    return jsonify({"question_banks": [dict(row) for row in rows]})
+
+
+@app.get("/api/school/exam-blueprints")
+def school_exam_blueprints():
+    """List only the authenticated institution's exam-blueprint metadata."""
+    institution_id = session["institution_id"]
+    permissions = identity.institution_permissions(
+        get_db(), user_id=session["user_id"], institution_id=institution_id
+    )
+    if not ({"*", "manage_institution", "manage_curriculum", "publish_exam"} & permissions):
+        return err("permission_denied", 403)
+    access_error = _require_feature_access(institution_id, "exam_generation")
+    if access_error:
+        return access_error
+
+    rows = get_db().execute(
+        """SELECT id, class_id, subject_id, book_id, total_marks,
+                  duration_minutes, language, status, created_at
+           FROM exam_blueprints
+           WHERE institution_id = ?
+           ORDER BY created_at DESC, id
+           LIMIT 200""",
+        (institution_id,),
+    ).fetchall()
+    return jsonify({"exam_blueprints": [dict(row) for row in rows]})
 
 
 @app.post("/api/school/jobs")
