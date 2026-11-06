@@ -223,3 +223,20 @@ def test_school_session_cannot_use_unapproved_method_on_school_api(school_sessio
     response = school_session_client.post("/api/school/me", json={})
     assert response.status_code == 403
     assert response.get_json() == {"error": "school_route_not_authorized"}
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("POST", "/api/school/question-banks"),
+        ("DELETE", "/api/school/question-banks"),
+        ("POST", "/api/school/exam-blueprints"),
+        ("PATCH", "/api/school/exam-blueprints"),
+    ],
+)
+def test_school_academic_read_routes_reject_unapproved_mutation_methods(
+    school_session_client, method, path
+):
+    response = school_session_client.open(path, method=method, json={})
+    assert response.status_code == 403
+    assert response.get_json() == {"error": "school_route_not_authorized"}
