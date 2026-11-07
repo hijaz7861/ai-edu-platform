@@ -60,3 +60,11 @@ by tenant, entitlement and role-negative tests.
 - Question-bank reads require an institution-scoped `manage_institution`, `manage_curriculum` or `verify_questions` permission and the `question_bank_analysis` entitlement when entitlement enforcement is enabled.
 - Exam-blueprint reads require an institution-scoped `manage_institution`, `manage_curriculum` or `publish_exam` permission and the `exam_generation` entitlement when entitlement enforcement is enabled.
 - Regression coverage verifies two-tenant isolation, role-by-route denial, no platform-wildcard permission leakage, safe response field allowlists and fail-closed behavior without an active entitlement.
+
+## Tenant-scoped attendance read API
+
+- `GET /api/school/attendance` returns at most 200 teacher-attendance event metadata rows for the institution bound to the revalidated school identity.
+- The endpoint requires an institution-scoped `manage_institution`, `view_all_reports`, or `manage_attendance_policy` permission and the `attendance` subscription entitlement when entitlement enforcement is enabled.
+- The optional `date=YYYY-MM-DD` filter applies to the UTC `created_at` date. Duplicate or invalid date filters and unsupported query parameters are rejected. A client-supplied `institution_id` is ignored and cannot switch tenants.
+- Both the attendance event and its linked teacher must belong to the authenticated institution. Responses contain only event/teacher identifiers, event type, time, method, status and creation timestamp; no email, reason, policy configuration or other tenant data is returned.
+- This is a read-only API. Mutation methods are denied by the exact school route/method allowlist. Existing platform-admin attendance write endpoints remain platform-admin-only; school-side check-in/out, leave workflows, corrections and approval actions are not implemented by this increment.

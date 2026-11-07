@@ -11,6 +11,7 @@ import hmac
 import hashlib
 import os
 import secrets
+from datetime import date as date_type
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify, g, abort, redirect, render_template, session, url_for
 from db import init_db, get_connection, DB_PATH
@@ -181,6 +182,7 @@ _SCHOOL_API_ROUTE_METHODS = frozenset({
     ("school_create_class", "POST"),
     ("school_question_banks", "GET"),
     ("school_exam_blueprints", "GET"),
+    ("school_attendance", "GET"),
     ("school_create_job", "POST"),
     ("school_get_job", "GET"),
 })
@@ -205,6 +207,7 @@ _ROUTE_ACCESS_POLICIES = {
     "school_create_class": ("school_user", frozenset({"POST"})),
     "school_question_banks": ("school_user", frozenset({"GET"})),
     "school_exam_blueprints": ("school_user", frozenset({"GET"})),
+    "school_attendance": ("school_user", frozenset({"GET"})),
     "school_create_job": ("school_user", frozenset({"POST"})),
     "school_get_job": ("school_user", frozenset({"GET"})),
     "admin_subscriptions_page": ("platform_admin", frozenset({"GET"})),
@@ -609,6 +612,57 @@ def school_exam_blueprints():
         (institution_id,),
     ).fetchall()
     return jsonify({"exam_blueprints": [dict(row) for row in rows]})
+
+
+@app.get("/api/school/attendance")
+def school_attendance():
+    """List bounded teacher-attendance metadata for the authenticated tenant."""
+    institution_id = session["institution_id"]
+    permissions = identity.institution_permissions(
+        get_db(), user_id=session["user_id"], institution_id=institution_id
+    )
+    if not ({"*", "manage_institution", "view_all_reports", "manage_attendance_policy"} & permissions):
+        return err("permission_denied", 403)
+
+    access_error = _require_feature_access(institution_id, "attendance")
+    if access_error:
+        return access_error
+
+    # Tenant selection is never accepted from the client. The legacy
+    # institution_id selector is ignored for compatibility; other filters are
+    # explicit and validated so callers cannot smuggle SQL fragments/options.
+    unsupported = set(request.args.keys()) - {"date", "institution_id"}
+    if unsupported:
+        return err("unsupported_query_parameter", 400)
+    date_values = request.args.getlist("date")
+    if len(date_values) > 1:
+        return err("date_must_be_unique", 400)
+
+    date_filter = None
+    if date_values:
+        try:
+            parsed_date = date_type.fromisoformat(date_values[0])
+        except (TypeError, ValueError):
+            return err("invalid_date", 400)
+        if parsed_date.isoformat() != date_values[0]:
+            return err("invalid_date", 400)
+        date_filter = parsed_date.isoformat()
+
+    sql = """
+        SELECT ae.id, ae.teacher_id, ae.event_type, ae.timestamp,
+               ae.method, ae.status, ae.created_at
+        FROM attendance_events ae
+        JOIN teachers t ON t.id = ae.teacher_id
+        WHERE ae.institution_id = ? AND t.institution_id = ?
+    """
+    params = [institution_id, institution_id]
+    if date_filter is not None:
+        sql += " AND substr(ae.created_at, 1, 10) = ?"
+        params.append(date_filter)
+    sql += " ORDER BY ae.created_at DESC, ae.id DESC LIMIT 200"
+
+    rows = get_db().execute(sql, params).fetchall()
+    return jsonify({"attendance_events": [dict(row) for row in rows]})
 
 
 @app.post("/api/school/jobs")

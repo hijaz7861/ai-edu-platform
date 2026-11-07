@@ -5,7 +5,7 @@ import uuid
 import pytest
 
 from db import init_db
-from services import core, identity
+from services import core, identity, attendance
 
 
 @pytest.fixture
@@ -499,3 +499,124 @@ def test_school_academic_reads_fail_closed_without_active_entitlement(
     response = client.get(path)
     assert response.status_code == 403
     assert response.get_json() == {"error": "subscription_required"}
+
+
+
+def _seed_school_attendance_events(school_app):
+    conn = init_db(school_app["db_path"])
+    suffix = uuid.uuid4().hex[:10]
+
+    user_a = core.create_user(conn, school_app["institution_a"], f"teacher-a-{suffix}@school.example")
+    teacher_a = core.create_teacher(conn, user_a, school_app["institution_a"], "TA-" + suffix)
+    policy_a = attendance.create_policy(
+        conn, school_app["institution_a"], "Tenant A policy",
+        working_hours_start="08:00", working_hours_end="16:00",
+    )
+    event_a, _ = attendance.check_in(
+        conn, teacher_a, school_app["institution_a"], policy_a, "08:05"
+    )
+
+    user_b = core.create_user(conn, school_app["institution_b"], f"teacher-b-{suffix}@school.example")
+    teacher_b = core.create_teacher(conn, user_b, school_app["institution_b"], "TB-" + suffix)
+    policy_b = attendance.create_policy(
+        conn, school_app["institution_b"], "Tenant B policy",
+        working_hours_start="08:00", working_hours_end="16:00",
+    )
+    event_b, _ = attendance.check_in(
+        conn, teacher_b, school_app["institution_b"], policy_b, "08:45"
+    )
+
+    created_at = conn.execute(
+        "SELECT created_at FROM attendance_events WHERE id = ?", (event_a,)
+    ).fetchone()["created_at"]
+    conn.close()
+    return event_a, event_b, created_at[:10]
+
+
+def test_school_attendance_is_tenant_scoped_and_ignores_client_tenant_selector(school_app):
+    event_a, event_b, event_date = _seed_school_attendance_events(school_app)
+    client = school_app["client"]
+    _login(client, school_app["user"])
+
+    response = client.get(
+        "/api/school/attendance",
+        query_string={
+            "institution_id": school_app["institution_b"],
+            "date": event_date,
+        },
+    )
+    assert response.status_code == 200
+    rows = response.get_json()["attendance_events"]
+    assert [row["id"] for row in rows] == [event_a]
+    assert event_b not in {row["id"] for row in rows}
+    assert all(set(row) == {
+        "id", "teacher_id", "event_type", "timestamp", "method", "status", "created_at"
+    } for row in rows)
+
+
+def test_school_attendance_enforces_institution_role_matrix(school_app):
+    conn = init_db(school_app["db_path"])
+    suffix = uuid.uuid4().hex[:10]
+    cases = [
+        ("Institution Admin", school_app["user"], True),
+        ("Principal", None, True),
+        ("Academic Coordinator", None, False),
+        ("Examiner", None, False),
+        ("HR/Attendance Officer", None, True),
+    ]
+    users = []
+    for index, (role_name, existing_user, allowed) in enumerate(cases):
+        user = existing_user or identity.create_school_user(
+            conn,
+            email=f"attendance-role-{index}-{suffix}@school.example",
+            password="correct horse battery staple",
+            institution_id=school_app["institution_a"],
+            role_name=role_name,
+            granted_by="platform-admin",
+        )
+        users.append((role_name, user, allowed))
+    conn.close()
+
+    for role_name, user, allowed in users:
+        client = school_app["app"].app.test_client()
+        _login(client, user)
+        response = client.get("/api/school/attendance")
+        assert response.status_code == (200 if allowed else 403), role_name
+        if not allowed:
+            assert response.get_json() == {"error": "permission_denied"}
+
+
+def test_school_attendance_fails_closed_without_active_entitlement(school_app, monkeypatch):
+    client = school_app["client"]
+    _login(client, school_app["user"])
+    monkeypatch.setenv("APP_ENV", "production")
+
+    response = client.get("/api/school/attendance")
+    assert response.status_code == 403
+    assert response.get_json() == {"error": "subscription_required"}
+
+
+@pytest.mark.parametrize("invalid_date", ["not-a-date", "2026-02-30", "2026-2-3"])
+def test_school_attendance_rejects_invalid_date_filters(school_app, invalid_date):
+    _login(school_app["client"], school_app["user"])
+    response = school_app["client"].get(
+        "/api/school/attendance", query_string={"date": invalid_date}
+    )
+    assert response.status_code == 400
+    assert response.get_json() == {"error": "invalid_date"}
+
+
+def test_school_attendance_rejects_duplicate_date_and_unknown_filters(school_app):
+    _login(school_app["client"], school_app["user"])
+    duplicate = school_app["client"].get(
+        "/api/school/attendance",
+        query_string=[("date", "2026-11-07"), ("date", "2026-11-08")],
+    )
+    assert duplicate.status_code == 400
+    assert duplicate.get_json() == {"error": "date_must_be_unique"}
+
+    unsupported = school_app["client"].get(
+        "/api/school/attendance", query_string={"limit": "999"}
+    )
+    assert unsupported.status_code == 400
+    assert unsupported.get_json() == {"error": "unsupported_query_parameter"}
