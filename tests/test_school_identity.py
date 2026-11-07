@@ -620,3 +620,25 @@ def test_school_attendance_rejects_duplicate_date_and_unknown_filters(school_app
     )
     assert unsupported.status_code == 400
     assert unsupported.get_json() == {"error": "unsupported_query_parameter"}
+
+
+def test_school_attendance_excludes_event_with_foreign_tenant_teacher(school_app):
+    event_a, event_b, _ = _seed_school_attendance_events(school_app)
+    conn = init_db(school_app["db_path"])
+    # Simulate a legacy/corrupt row whose event tenant says A while its teacher
+    # still belongs to B. The endpoint must require both ownership relationships.
+    conn.execute(
+        "UPDATE attendance_events SET institution_id = ? WHERE id = ?",
+        (school_app["institution_a"], event_b),
+    )
+    conn.commit()
+    conn.close()
+
+    client = school_app["client"]
+    _login(client, school_app["user"])
+    response = client.get("/api/school/attendance")
+
+    assert response.status_code == 200
+    rows = response.get_json()["attendance_events"]
+    assert [row["id"] for row in rows] == [event_a]
+    assert event_b not in {row["id"] for row in rows}
