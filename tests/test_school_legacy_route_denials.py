@@ -14,6 +14,11 @@ SCHOOL_API_ROUTE_METHODS = frozenset({
     ("school_me", "GET"),
     ("school_classes", "GET"),
     ("school_create_class", "POST"),
+    ("school_question_banks", "GET"),
+    ("school_exam_blueprints", "GET"),
+    ("school_attendance", "GET"),
+    ("school_create_job", "POST"),
+    ("school_get_job", "GET"),
 })
 
 
@@ -217,5 +222,34 @@ def test_school_session_cannot_access_unregistered_school_api_path(school_sessio
 
 def test_school_session_cannot_use_unapproved_method_on_school_api(school_session_client):
     response = school_session_client.post("/api/school/me", json={})
+    assert response.status_code == 403
+    assert response.get_json() == {"error": "school_route_not_authorized"}
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("POST", "/api/school/question-banks"),
+        ("DELETE", "/api/school/question-banks"),
+        ("POST", "/api/school/exam-blueprints"),
+        ("PATCH", "/api/school/exam-blueprints"),
+    ],
+)
+def test_school_academic_read_routes_reject_unapproved_mutation_methods(
+    school_session_client, method, path
+):
+    response = school_session_client.open(path, method=method, json={})
+    assert response.status_code == 403
+    assert response.get_json() == {"error": "school_route_not_authorized"}
+
+
+
+@pytest.mark.parametrize("method", ["POST", "PATCH", "DELETE"])
+def test_school_attendance_read_route_rejects_mutation_methods(
+    school_session_client, method
+):
+    response = school_session_client.open(
+        "/api/school/attendance", method=method, json={}
+    )
     assert response.status_code == 403
     assert response.get_json() == {"error": "school_route_not_authorized"}
