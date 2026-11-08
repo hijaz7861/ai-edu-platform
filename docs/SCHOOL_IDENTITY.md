@@ -38,10 +38,14 @@ All authenticated institution roles may read their own `/api/school/me`
 profile. Class listing is tenant-scoped and permits Institution Admin,
 Principal and Academic Coordinator (`manage_curriculum`). Class creation and
 job enqueue require `manage_institution`. Job status is tenant-scoped and
-permits Institution Admin and Principal (`view_all_reports`).
+permits Institution Admin and Principal (`view_all_reports`). Attendance reads
+require `manage_institution`, `view_all_reports`, or `manage_attendance_policy`
+and the `attendance` entitlement. Leave-request reads require
+`manage_institution`, `approve_leave`, or `view_all_reports` and the
+`leave_management` entitlement.
 
 | Institution role | Read own profile | List own classes | Create class | List question-bank metadata | List exam-blueprint metadata | Read attendance | List leave requests | Enqueue job | Read tenant job |
-| --- | --- | --- | --- | --- | --- | --- | --- |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Institution Admin | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
 | Principal | Yes | Yes | No | No | Yes | Yes | Yes | No | Yes |
 | Academic Coordinator | Yes | Yes | No | Yes | Yes | No | No | No | No |
