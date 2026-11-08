@@ -17,6 +17,7 @@ SCHOOL_API_ROUTE_METHODS = frozenset({
     ("school_question_banks", "GET"),
     ("school_exam_blueprints", "GET"),
     ("school_attendance", "GET"),
+    ("school_leave_requests", "GET"),
     ("school_create_job", "POST"),
     ("school_get_job", "GET"),
 })
@@ -250,6 +251,18 @@ def test_school_attendance_read_route_rejects_mutation_methods(
 ):
     response = school_session_client.open(
         "/api/school/attendance", method=method, json={}
+    )
+    assert response.status_code == 403
+    assert response.get_json() == {"error": "school_route_not_authorized"}
+
+
+
+@pytest.mark.parametrize("method", ["POST", "PATCH", "DELETE"])
+def test_school_leave_request_read_route_rejects_mutation_methods(
+    school_session_client, method
+):
+    response = school_session_client.open(
+        "/api/school/leave-requests", method=method, json={}
     )
     assert response.status_code == 403
     assert response.get_json() == {"error": "school_route_not_authorized"}

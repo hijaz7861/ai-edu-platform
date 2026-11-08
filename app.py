@@ -183,6 +183,7 @@ _SCHOOL_API_ROUTE_METHODS = frozenset({
     ("school_question_banks", "GET"),
     ("school_exam_blueprints", "GET"),
     ("school_attendance", "GET"),
+    ("school_leave_requests", "GET"),
     ("school_create_job", "POST"),
     ("school_get_job", "GET"),
 })
@@ -208,6 +209,7 @@ _ROUTE_ACCESS_POLICIES = {
     "school_question_banks": ("school_user", frozenset({"GET"})),
     "school_exam_blueprints": ("school_user", frozenset({"GET"})),
     "school_attendance": ("school_user", frozenset({"GET"})),
+    "school_leave_requests": ("school_user", frozenset({"GET"})),
     "school_create_job": ("school_user", frozenset({"POST"})),
     "school_get_job": ("school_user", frozenset({"GET"})),
     "admin_subscriptions_page": ("platform_admin", frozenset({"GET"})),
@@ -663,6 +665,53 @@ def school_attendance():
 
     rows = get_db().execute(sql, params).fetchall()
     return jsonify({"attendance_events": [dict(row) for row in rows]})
+
+
+@app.get("/api/school/leave-requests")
+def school_leave_requests():
+    """List bounded leave-request metadata after checking both tenant relationships."""
+    institution_id = session["institution_id"]
+    permissions = identity.institution_permissions(
+        get_db(), user_id=session["user_id"], institution_id=institution_id
+    )
+    if not ({"*", "manage_institution", "approve_leave", "view_all_reports"} & permissions):
+        return err("permission_denied", 403)
+
+    access_error = _require_feature_access(institution_id, "leave_management")
+    if access_error:
+        return access_error
+
+    unsupported = set(request.args.keys()) - {"status", "institution_id"}
+    if unsupported:
+        return err("unsupported_query_parameter", 400)
+    status_values = request.args.getlist("status")
+    if len(status_values) > 1:
+        return err("status_must_be_unique", 400)
+    status_filter = None
+    if status_values:
+        status_filter = status_values[0]
+        if status_filter not in {"pending", "approved", "rejected"}:
+            return err("invalid_status", 400)
+
+    # A leave request has no direct institution_id column. Require both its
+    # teacher and leave type to belong to the authenticated institution so
+    # inconsistent legacy rows cannot bridge tenants.
+    sql = """
+        SELECT lr.id, lr.teacher_id, lt.name AS leave_type_name,
+               lr.start_date, lr.end_date, lr.status, lr.created_at
+        FROM leave_requests lr
+        JOIN teachers t ON t.id = lr.teacher_id
+        JOIN leave_types lt ON lt.id = lr.leave_type_id
+        WHERE t.institution_id = ? AND lt.institution_id = ?
+    """
+    params = [institution_id, institution_id]
+    if status_filter is not None:
+        sql += " AND lr.status = ?"
+        params.append(status_filter)
+    sql += " ORDER BY lr.created_at DESC, lr.id DESC LIMIT 200"
+
+    rows = get_db().execute(sql, params).fetchall()
+    return jsonify({"leave_requests": [dict(row) for row in rows]})
 
 
 @app.post("/api/school/jobs")
