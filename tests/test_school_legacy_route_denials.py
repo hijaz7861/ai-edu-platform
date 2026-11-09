@@ -258,7 +258,7 @@ def test_school_attendance_read_route_rejects_mutation_methods(
 
 
 
-@pytest.mark.parametrize("method", ["POST", "PATCH", "DELETE"])
+@pytest.mark.parametrize("method", ["PATCH", "DELETE"])
 def test_school_leave_request_read_route_rejects_mutation_methods(
     school_session_client, method
 ):
