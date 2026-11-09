@@ -50,7 +50,7 @@ and the `attendance` entitlement. Leave-request reads require
 | Principal | Yes | Yes | No | No | Yes | Yes | Yes | Yes | No | Yes |
 | Academic Coordinator | Yes | Yes | No | Yes | Yes | No | No | No | No | No |
 | Examiner | Yes | No | No | Yes | Yes | No | No | No | No | No |
-| HR/Attendance Officer | Yes | No | No | No | No | Yes | Yes | Yes | No | Yes |
+| HR/Attendance Officer | Yes | No | No | No | No | Yes | Yes | Yes | No | No |
 
 This is not a blanket permission for future endpoints. New routes and methods
 remain denied until explicitly added to the exact route allowlist and covered
@@ -88,8 +88,8 @@ by tenant, entitlement and role-negative tests.
 - `POST /api/school/leave-requests` creates a request for an active teacher in the institution bound to the revalidated school session. This is a staff-assisted submission endpoint; it is not teacher self-service because school identities are not yet linked to individual teacher records.
 - Allowed roles are Institution Admin (`manage_institution`), Principal (`approve_leave`) and HR/Attendance Officer (`approve_leave` or `manage_attendance_policy`). Academic Coordinator and Examiner are denied.
 - The `leave_management` entitlement is required whenever production or explicit entitlement enforcement is enabled. The route is POST-only and protected by the existing school-session CSRF check.
-- The body accepts only `teacher_id`, `leave_type_id`, `start_date`, `end_date`, `reason`, and optional `substitute_teacher_id`. Tenant ID and actor ID are never accepted from the client. All referenced teachers and the leave type must be active/owned by the authenticated tenant; foreign or inactive references return the same 404.
+- The body accepts only `teacher_id`, `leave_type_id`, `start_date`, `end_date`, `reason`, and optional `substitute_teacher_id`. Tenant ID and actor ID are never accepted from the client. The teacher and optional substitute must be active and tenant-owned; the leave type must be tenant-owned. Foreign or inactive teacher references and foreign leave types return the same 404.
 - Dates must be canonical `YYYY-MM-DD`, end date cannot precede start date, and the required reason is limited to 2,000 characters. The response contains only request ID and workflow status, never the reason.
 - An `Idempotency-Key` is mandatory. The key is SHA-256 hashed at rest and scoped to institution. A transaction creates the request, approval rows, append-only audit event and idempotency record atomically. Same actor + same key + same payload replays the original request; a different actor or payload returns 409.
-- Leave types configured with one or two approval levels create the corresponding pending approval rows. A leave type explicitly configured with `requires_approval=0` is created as approved with no approval rows. This does not expose approval/rejection APIs.
+- Leave types configured with one or two approval levels create the corresponding pending approval rows. A leave type explicitly configured with `requires_approval=0` is created as approved with no approval rows; NULL or malformed legacy values fail closed and require approval. This does not expose approval/rejection APIs.
 - Regression coverage includes cross-tenant teacher/type/substitute denial, five-role allow/deny behavior, idempotency replay/conflict, CSRF and missing-key rejection, date/reason validation, production entitlement denial/allowance, multi-level and no-approval configuration, and response privacy.
