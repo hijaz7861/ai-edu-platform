@@ -22,6 +22,10 @@ from services.api_rate_limit import allow_request
 from services.security_audit import append_security_event
 from services import identity
 from services.tenant_jobs import enqueue_job, get_tenant_job, JobAuthorizationError, IdempotencyConflict
+from services.tenant_leave import (
+    create_school_leave_request, LeaveAuthorizationError,
+    LeaveIdempotencyConflict, LeaveResourceNotFound,
+)
 from providers.base import get_default_registry
 from dashboard_api import dashboard_api
 
@@ -184,6 +188,7 @@ _SCHOOL_API_ROUTE_METHODS = frozenset({
     ("school_exam_blueprints", "GET"),
     ("school_attendance", "GET"),
     ("school_leave_requests", "GET"),
+    ("school_create_leave_request", "POST"),
     ("school_create_job", "POST"),
     ("school_get_job", "GET"),
 })
@@ -210,6 +215,7 @@ _ROUTE_ACCESS_POLICIES = {
     "school_exam_blueprints": ("school_user", frozenset({"GET"})),
     "school_attendance": ("school_user", frozenset({"GET"})),
     "school_leave_requests": ("school_user", frozenset({"GET"})),
+    "school_create_leave_request": ("school_user", frozenset({"POST"})),
     "school_create_job": ("school_user", frozenset({"POST"})),
     "school_get_job": ("school_user", frozenset({"GET"})),
     "admin_subscriptions_page": ("platform_admin", frozenset({"GET"})),
@@ -712,6 +718,54 @@ def school_leave_requests():
 
     rows = get_db().execute(sql, params).fetchall()
     return jsonify({"leave_requests": [dict(row) for row in rows]})
+
+
+@app.post("/api/school/leave-requests")
+def school_create_leave_request():
+    """Create an idempotent, tenant-bound leave request for an active teacher."""
+    body = request.get_json(silent=True)
+    if body is None:
+        if request.data:
+            return err("invalid_json", 400)
+        body = {}
+    allowed = {
+        "teacher_id", "leave_type_id", "start_date", "end_date",
+        "reason", "substitute_teacher_id",
+    }
+    if not isinstance(body, dict) or set(body) - allowed:
+        return err("unsupported_payload", 400)
+    required = {"teacher_id", "leave_type_id", "start_date", "end_date", "reason"}
+    if not required.issubset(body):
+        return err("required_fields_missing", 400)
+
+    institution_id = session["institution_id"]
+    access_error = _require_feature_access(institution_id, "leave_management")
+    if access_error:
+        return access_error
+
+    try:
+        leave_request_id, created, status = create_school_leave_request(
+            get_db(),
+            institution_id=institution_id,
+            actor_id=session["user_id"],
+            teacher_id=body.get("teacher_id"),
+            leave_type_id=body.get("leave_type_id"),
+            start_date=body.get("start_date"),
+            end_date=body.get("end_date"),
+            reason=body.get("reason"),
+            substitute_teacher_id=body.get("substitute_teacher_id"),
+            idempotency_key=request.headers.get("Idempotency-Key"),
+        )
+    except LeaveAuthorizationError:
+        return err("permission_denied", 403)
+    except LeaveResourceNotFound:
+        return err("leave_resource_not_found", 404)
+    except LeaveIdempotencyConflict:
+        return err("idempotency_key_conflict", 409)
+    except ValueError as exc:
+        return err(str(exc), 400)
+
+    return jsonify({"id": leave_request_id, "status": status}), 201 if created else 200
 
 
 @app.post("/api/school/jobs")
