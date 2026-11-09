@@ -37,6 +37,7 @@ def _add_tenant_leave_request_keys(conn: sqlite3.Connection) -> None:
             leave_request_id TEXT NOT NULL REFERENCES leave_requests(id) ON DELETE RESTRICT,
             actor_id TEXT NOT NULL,
             created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
             UNIQUE (institution_id, idempotency_key_hash)
         )
         """
@@ -46,20 +47,8 @@ def _add_tenant_leave_request_keys(conn: sqlite3.Connection) -> None:
            ON tenant_leave_request_keys(leave_request_id)"""
     )
     conn.execute(
-        """
-        CREATE TRIGGER IF NOT EXISTS tenant_leave_request_keys_no_update
-        BEFORE UPDATE ON tenant_leave_request_keys BEGIN
-            SELECT RAISE(ABORT, 'tenant leave request keys are append-only');
-        END
-        """
-    )
-    conn.execute(
-        """
-        CREATE TRIGGER IF NOT EXISTS tenant_leave_request_keys_no_delete
-        BEFORE DELETE ON tenant_leave_request_keys BEGIN
-            SELECT RAISE(ABORT, 'tenant leave request keys are append-only');
-        END
-        """
+        """CREATE INDEX IF NOT EXISTS idx_tenant_leave_keys_expiry
+           ON tenant_leave_request_keys(institution_id, expires_at)"""
     )
 
 
