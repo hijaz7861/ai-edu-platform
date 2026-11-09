@@ -44,13 +44,13 @@ and the `attendance` entitlement. Leave-request reads require
 `manage_institution`, `approve_leave`, or `view_all_reports` and the
 `leave_management` entitlement.
 
-| Institution role | Read own profile | List own classes | Create class | List question-bank metadata | List exam-blueprint metadata | Read attendance | List leave requests | Enqueue job | Read tenant job |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Institution Admin | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| Principal | Yes | Yes | No | No | Yes | Yes | Yes | No | Yes |
-| Academic Coordinator | Yes | Yes | No | Yes | Yes | No | No | No | No |
-| Examiner | Yes | No | No | Yes | Yes | No | No | No | No |
-| HR/Attendance Officer | Yes | No | No | No | No | Yes | Yes | No | No |
+| Institution role | Read own profile | List own classes | Create class | List question-bank metadata | List exam-blueprint metadata | Read attendance | List leave requests | Create leave request | Enqueue job | Read tenant job |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Institution Admin | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| Principal | Yes | Yes | No | No | Yes | Yes | Yes | Yes | No | Yes |
+| Academic Coordinator | Yes | Yes | No | Yes | Yes | No | No | No | No | No |
+| Examiner | Yes | No | No | Yes | Yes | No | No | No | No | No |
+| HR/Attendance Officer | Yes | No | No | No | No | Yes | Yes | Yes | No | Yes |
 
 This is not a blanket permission for future endpoints. New routes and methods
 remain denied until explicitly added to the exact route allowlist and covered
@@ -80,4 +80,16 @@ by tenant, entitlement and role-negative tests.
 - Access requires an institution-scoped `manage_institution`, `approve_leave`, or `view_all_reports` permission and the `leave_management` subscription entitlement when entitlement enforcement is enabled.
 - The optional `status` filter accepts one of `pending`, `approved`, or `rejected`. Duplicate/invalid status values and unsupported query parameters are rejected; a supplied `institution_id` is ignored.
 - The response includes only request ID, teacher ID, leave-type name, dates, status and creation timestamp. It excludes free-text reasons, substitute-teacher IDs, approver identities and approval comments.
-- The route is read-only. Leave submission, correction, approval and rejection mutations remain platform-admin-only/not exposed to school sessions until transactional tenant/role/idempotency rules are implemented.
+- Leave submission is now available through `POST /api/school/leave-requests`. It is limited to Institution Admin, Principal and HR/Attendance Officer, requires the `leave_management` entitlement when enforcement is enabled, and requires a CSRF token plus an `Idempotency-Key`. The service revalidates the actor and institution inside `BEGIN IMMEDIATE`, checks that the teacher, leave type and optional substitute teacher all belong to the authenticated institution, and atomically creates the request, configured approval rows, audit event and hashed idempotency record. Replaying the same key and payload by the same actor returns the original request; a different payload or actor receives 409. The response never returns the free-text reason. Approval/rejection decisions and correction mutations remain unexposed until their own transactional, ordered-approval and audit rules are implemented.
+
+
+## Tenant-scoped leave-request submission
+
+- `POST /api/school/leave-requests` creates a request for an active teacher in the institution bound to the revalidated school session. This is a staff-assisted submission endpoint; it is not teacher self-service because school identities are not yet linked to individual teacher records.
+- Allowed roles are Institution Admin (`manage_institution`), Principal (`approve_leave`) and HR/Attendance Officer (`approve_leave` or `manage_attendance_policy`). Academic Coordinator and Examiner are denied.
+- The `leave_management` entitlement is required whenever production or explicit entitlement enforcement is enabled. The route is POST-only and protected by the existing school-session CSRF check.
+- The body accepts only `teacher_id`, `leave_type_id`, `start_date`, `end_date`, `reason`, and optional `substitute_teacher_id`. Tenant ID and actor ID are never accepted from the client. All referenced teachers and the leave type must be active/owned by the authenticated tenant; foreign or inactive references return the same 404.
+- Dates must be canonical `YYYY-MM-DD`, end date cannot precede start date, and the required reason is limited to 2,000 characters. The response contains only request ID and workflow status, never the reason.
+- An `Idempotency-Key` is mandatory. The key is SHA-256 hashed at rest and scoped to institution. A transaction creates the request, approval rows, append-only audit event and idempotency record atomically. Same actor + same key + same payload replays the original request; a different actor or payload returns 409.
+- Leave types configured with one or two approval levels create the corresponding pending approval rows. A leave type explicitly configured with `requires_approval=0` is created as approved with no approval rows. This does not expose approval/rejection APIs.
+- Regression coverage includes cross-tenant teacher/type/substitute denial, five-role allow/deny behavior, idempotency replay/conflict, CSRF and missing-key rejection, date/reason validation, production entitlement denial/allowance, multi-level and no-approval configuration, and response privacy.
