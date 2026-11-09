@@ -5,7 +5,7 @@ import hashlib
 import json
 import re
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from services import identity
 
@@ -20,10 +20,6 @@ class LeaveIdempotencyConflict(ValueError):
 
 class LeaveResourceNotFound(LookupError):
     """A teacher, leave type, or substitute is not owned by the authenticated tenant."""
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def _required_identifier(value, error_code: str) -> str:
@@ -121,6 +117,15 @@ def create_school_leave_request(
         if not ({"*", "manage_institution", "approve_leave", "manage_attendance_policy"} & permissions):
             raise LeaveAuthorizationError("leave_request_submission_denied")
 
+        now_dt = datetime.now(timezone.utc)
+        created_at = now_dt.isoformat()
+        expires_at = (now_dt + timedelta(hours=24)).isoformat()
+        # Expire only this tenant's idempotency metadata; the leave request and
+        # its audit record remain intact. This bounds retry-key retention.
+        conn.execute(
+            "DELETE FROM tenant_leave_request_keys WHERE institution_id = ? AND expires_at <= ?",
+            (institution_id, created_at),
+        )
         replay = conn.execute(
             """SELECT k.actor_id, k.request_hash, lr.id, lr.status
                FROM tenant_leave_request_keys k
@@ -164,7 +169,6 @@ def create_school_leave_request(
         )
         status = "pending" if requires_approval else "approved"
         request_id = uuid.uuid4().hex
-        created_at = _now()
         conn.execute(
             """INSERT INTO leave_requests
                (id, teacher_id, leave_type_id, start_date, end_date, reason,
@@ -186,11 +190,11 @@ def create_school_leave_request(
         conn.execute(
             """INSERT INTO tenant_leave_request_keys
                (id, institution_id, idempotency_key_hash, request_hash,
-                leave_request_id, actor_id, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                leave_request_id, actor_id, created_at, expires_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 uuid.uuid4().hex, institution_id, key_hash, request_hash,
-                request_id, actor_id, created_at,
+                request_id, actor_id, created_at, expires_at,
             ),
         )
         conn.execute(
