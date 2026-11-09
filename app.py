@@ -24,7 +24,7 @@ from services import identity
 from services.tenant_jobs import enqueue_job, get_tenant_job, JobAuthorizationError, IdempotencyConflict
 from services.tenant_leave import (
     create_school_leave_request, LeaveAuthorizationError,
-    LeaveIdempotencyConflict, LeaveResourceNotFound,
+    LeaveIdempotencyConflict, LeaveResourceNotFound, LeaveDateOverlapError,
 )
 from providers.base import get_default_registry
 from dashboard_api import dashboard_api
@@ -762,6 +762,8 @@ def school_create_leave_request():
         return err("leave_resource_not_found", 404)
     except LeaveIdempotencyConflict:
         return err("idempotency_key_conflict", 409)
+    except LeaveDateOverlapError:
+        return err("leave_dates_overlap", 409)
     except ValueError as exc:
         return err(str(exc), 400)
 
