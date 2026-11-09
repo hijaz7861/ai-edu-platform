@@ -26,9 +26,47 @@ def _add_tenant_job_schema(conn: sqlite3.Connection) -> None:
     ensure_schema(conn, commit=False)
 
 
+def _add_tenant_leave_request_keys(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS tenant_leave_request_keys (
+            id TEXT PRIMARY KEY,
+            institution_id TEXT NOT NULL REFERENCES institutions(id) ON DELETE RESTRICT,
+            idempotency_key_hash TEXT NOT NULL,
+            request_hash TEXT NOT NULL,
+            leave_request_id TEXT NOT NULL REFERENCES leave_requests(id) ON DELETE RESTRICT,
+            actor_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE (institution_id, idempotency_key_hash)
+        )
+        """
+    )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_tenant_leave_keys_request
+           ON tenant_leave_request_keys(leave_request_id)"""
+    )
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS tenant_leave_request_keys_no_update
+        BEFORE UPDATE ON tenant_leave_request_keys BEGIN
+            SELECT RAISE(ABORT, 'tenant leave request keys are append-only');
+        END
+        """
+    )
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS tenant_leave_request_keys_no_delete
+        BEFORE DELETE ON tenant_leave_request_keys BEGIN
+            SELECT RAISE(ABORT, 'tenant leave request keys are append-only');
+        END
+        """
+    )
+
+
 _MIGRATIONS = (
     (1, "school_identity_password_hash", _add_school_password_hash),
     (2, "tenant_background_jobs", _add_tenant_job_schema),
+    (3, "tenant_leave_request_idempotency", _add_tenant_leave_request_keys),
 )
 
 
