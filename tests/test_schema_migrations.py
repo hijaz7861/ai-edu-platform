@@ -21,6 +21,7 @@ def test_migrations_are_versioned_and_idempotent(tmp_path):
         (1, "school_identity_password_hash"),
         (2, "tenant_background_jobs"),
         (3, "tenant_leave_request_idempotency"),
+        (4, "tenant_leave_key_retention_window"),
     ]
     assert _versions(first) == expected
     assert "password_hash" in {
@@ -136,6 +137,7 @@ def test_concurrent_database_initialization_applies_each_migration_once(tmp_path
         (1, "school_identity_password_hash"),
         (2, "tenant_background_jobs"),
         (3, "tenant_leave_request_idempotency"),
+        (4, "tenant_leave_key_retention_window"),
     ]
     assert all(versions == expected and has_jobs for versions, has_jobs in results)
 
@@ -149,5 +151,61 @@ def test_tenant_leave_request_key_migration_has_expiry_column(tmp_path):
         ).fetchall()
     }
     assert {"idempotency_key_hash", "request_hash", "actor_id", "expires_at"} <= columns
-    assert _versions(conn)[-1] == (3, "tenant_leave_request_idempotency")
+    assert _versions(conn)[-1] == (4, "tenant_leave_key_retention_window")
     conn.close()
+
+
+
+def test_legacy_v3_leave_key_table_is_upgraded_for_expiry(tmp_path):
+    path = str(tmp_path / "legacy-leave-keys.sqlite")
+    legacy = sqlite3.connect(path)
+    legacy.executescript(
+        """
+        CREATE TABLE schema_migrations (
+            version INTEGER PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO schema_migrations(version, name) VALUES
+            (1, 'school_identity_password_hash'),
+            (2, 'tenant_background_jobs'),
+            (3, 'tenant_leave_request_idempotency');
+        CREATE TABLE tenant_leave_request_keys (
+            id TEXT PRIMARY KEY,
+            institution_id TEXT NOT NULL REFERENCES institutions(id),
+            idempotency_key_hash TEXT NOT NULL,
+            request_hash TEXT NOT NULL,
+            leave_request_id TEXT NOT NULL REFERENCES leave_requests(id),
+            actor_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(institution_id, idempotency_key_hash)
+        );
+        CREATE TRIGGER tenant_leave_request_keys_no_update
+        BEFORE UPDATE ON tenant_leave_request_keys BEGIN
+            SELECT RAISE(ABORT, 'tenant leave request keys are append-only');
+        END;
+        CREATE TRIGGER tenant_leave_request_keys_no_delete
+        BEFORE DELETE ON tenant_leave_request_keys BEGIN
+            SELECT RAISE(ABORT, 'tenant leave request keys are append-only');
+        END;
+        """
+    )
+    legacy.commit()
+    legacy.close()
+
+    upgraded = init_db(path)
+    columns = {
+        row["name"] for row in upgraded.execute(
+            "PRAGMA table_info(tenant_leave_request_keys)"
+        ).fetchall()
+    }
+    assert "expires_at" in columns
+    triggers = {
+        row["name"] for row in upgraded.execute(
+            "SELECT name FROM sqlite_master WHERE type='trigger'"
+        ).fetchall()
+    }
+    assert "tenant_leave_request_keys_no_update" not in triggers
+    assert "tenant_leave_request_keys_no_delete" not in triggers
+    assert _versions(upgraded)[-1] == (4, "tenant_leave_key_retention_window")
+    upgraded.close()
