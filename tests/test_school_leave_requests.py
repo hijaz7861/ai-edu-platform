@@ -323,7 +323,7 @@ def test_school_leave_submission_enforces_institution_role_permissions(leave_env
         "end_date": "2026-11-25",
         "reason": "Role-bound request",
     }
-    response = _submit_leave(client, csrf, "role-leave-" + role.replace("/", "-"), payload)
+    response = _submit_leave(client, csrf, "role-leave-" + role.lower().replace("/", "-").replace(" ", "-"), payload)
     assert response.status_code == expected, role
     if expected == 403:
         assert response.get_json() == {"error": "permission_denied"}
