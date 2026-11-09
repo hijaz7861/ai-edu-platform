@@ -260,16 +260,37 @@ def test_school_leave_submission_is_tenant_bound_and_idempotent(leave_env):
         "SELECT COUNT(*) FROM leave_approvals WHERE leave_request_id=?",
         (first.get_json()["id"],),
     ).fetchone()[0] == 1
-    assert conn.execute(
-        "SELECT COUNT(*) FROM tenant_leave_request_keys WHERE leave_request_id=?",
+    key_row = conn.execute(
+        "SELECT idempotency_key_hash, created_at, expires_at FROM tenant_leave_request_keys WHERE leave_request_id=?",
         (first.get_json()["id"],),
-    ).fetchone()[0] == 1
+    ).fetchone()
+    assert key_row is not None
+    assert key_row["idempotency_key_hash"] != "leave-submit-0001"
+    assert len(key_row["idempotency_key_hash"]) == 64
+    assert key_row["expires_at"] > key_row["created_at"]
     conn.close()
 
     changed = dict(payload, reason="Different request")
     conflict = _submit_leave(client, csrf, "leave-submit-0001", changed)
     assert conflict.status_code == 409
     assert conflict.get_json() == {"error": "idempotency_key_conflict"}
+
+    other_client = e["app"].app.test_client()
+    other_csrf = login(other_client, e["users"]["Principal"])
+    actor_conflict = _submit_leave(other_client, other_csrf, "leave-submit-0001", payload)
+    assert actor_conflict.status_code == 409
+    assert actor_conflict.get_json() == {"error": "idempotency_key_conflict"}
+
+    conn = init_db(e["path"])
+    conn.execute(
+        "UPDATE tenant_leave_request_keys SET expires_at='2000-01-01T00:00:00+00:00' WHERE idempotency_key_hash=?",
+        (key_row["idempotency_key_hash"],),
+    )
+    conn.commit()
+    conn.close()
+    expired_replay = _submit_leave(client, csrf, "leave-submit-0001", payload)
+    assert expired_replay.status_code == 201
+    assert expired_replay.get_json()["id"] != first.get_json()["id"]
 
     listed = client.get("/api/school/leave-requests")
     assert listed.status_code == 200
