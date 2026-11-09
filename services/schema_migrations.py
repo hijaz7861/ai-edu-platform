@@ -6,6 +6,7 @@ existing databases are recorded here and applied under one SQLite write lock.
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timedelta, timezone
 
 from services.tenant_jobs import ensure_schema
 
@@ -52,10 +53,49 @@ def _add_tenant_leave_request_keys(conn: sqlite3.Connection) -> None:
     )
 
 
+def _upgrade_tenant_leave_key_retention(conn: sqlite3.Connection) -> None:
+    columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(tenant_leave_request_keys)").fetchall()
+    }
+    if "expires_at" not in columns:
+        conn.execute(
+            "ALTER TABLE tenant_leave_request_keys ADD COLUMN expires_at TEXT NOT NULL DEFAULT ''"
+        )
+
+    # Backfill older v3 rows to a 24-hour retry window. Invalid legacy
+    # timestamps expire immediately instead of extending their retention.
+    rows = conn.execute(
+        "SELECT id, created_at FROM tenant_leave_request_keys WHERE expires_at = ''"
+    ).fetchall()
+    for row in rows:
+        try:
+            created = datetime.fromisoformat(row["created_at"])
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            expires = (created + timedelta(hours=24)).isoformat()
+        except (TypeError, ValueError):
+            expires = "1970-01-01T00:00:00+00:00"
+        conn.execute(
+            "UPDATE tenant_leave_request_keys SET expires_at = ? WHERE id = ?",
+            (expires, row["id"]),
+        )
+
+    # Idempotency records are operational retry metadata, not immutable audit
+    # events. They must be deletable after expiry to honor retention policy.
+    conn.execute("DROP TRIGGER IF EXISTS tenant_leave_request_keys_no_update")
+    conn.execute("DROP TRIGGER IF EXISTS tenant_leave_request_keys_no_delete")
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_tenant_leave_keys_expiry
+           ON tenant_leave_request_keys(institution_id, expires_at)"""
+    )
+
+
 _MIGRATIONS = (
     (1, "school_identity_password_hash", _add_school_password_hash),
     (2, "tenant_background_jobs", _add_tenant_job_schema),
     (3, "tenant_leave_request_idempotency", _add_tenant_leave_request_keys),
+    (4, "tenant_leave_key_retention_window", _upgrade_tenant_leave_key_retention),
 )
 
 
