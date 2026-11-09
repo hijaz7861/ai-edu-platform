@@ -20,6 +20,7 @@ def test_migrations_are_versioned_and_idempotent(tmp_path):
     expected = [
         (1, "school_identity_password_hash"),
         (2, "tenant_background_jobs"),
+        (3, "tenant_leave_request_idempotency"),
     ]
     assert _versions(first) == expected
     assert "password_hash" in {
@@ -134,5 +135,23 @@ def test_concurrent_database_initialization_applies_each_migration_once(tmp_path
     expected = [
         (1, "school_identity_password_hash"),
         (2, "tenant_background_jobs"),
+        (3, "tenant_leave_request_idempotency"),
     ]
     assert all(versions == expected and has_jobs for versions, has_jobs in results)
+
+
+
+def test_tenant_leave_request_key_migration_is_append_only(tmp_path):
+    conn = init_db(str(tmp_path / "leave-keys.sqlite"))
+    assert conn.execute(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='tenant_leave_request_keys'"
+    ).fetchone()[0] == 1
+    triggers = {
+        row["name"] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='trigger'"
+        ).fetchall()
+    }
+    assert "tenant_leave_request_keys_no_update" in triggers
+    assert "tenant_leave_request_keys_no_delete" in triggers
+    assert _versions(conn)[-1] == (3, "tenant_leave_request_idempotency")
+    conn.close()
