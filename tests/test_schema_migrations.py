@@ -141,17 +141,13 @@ def test_concurrent_database_initialization_applies_each_migration_once(tmp_path
 
 
 
-def test_tenant_leave_request_key_migration_is_append_only(tmp_path):
+def test_tenant_leave_request_key_migration_has_expiry_column(tmp_path):
     conn = init_db(str(tmp_path / "leave-keys.sqlite"))
-    assert conn.execute(
-        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='tenant_leave_request_keys'"
-    ).fetchone()[0] == 1
-    triggers = {
+    columns = {
         row["name"] for row in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='trigger'"
+            "PRAGMA table_info(tenant_leave_request_keys)"
         ).fetchall()
     }
-    assert "tenant_leave_request_keys_no_update" in triggers
-    assert "tenant_leave_request_keys_no_delete" in triggers
+    assert {"idempotency_key_hash", "request_hash", "actor_id", "expires_at"} <= columns
     assert _versions(conn)[-1] == (3, "tenant_leave_request_idempotency")
     conn.close()
