@@ -21,6 +21,9 @@ class LeaveIdempotencyConflict(ValueError):
 class LeaveResourceNotFound(LookupError):
     """A teacher, leave type, or substitute is not owned by the authenticated tenant."""
 
+class LeaveDateOverlapError(ValueError):
+    """The teacher already has a pending or approved leave for overlapping dates."""
+
 
 def _required_identifier(value, error_code: str) -> str:
     if not isinstance(value, str) or not value.strip() or len(value) > 128:
@@ -160,6 +163,19 @@ def create_school_leave_request(
             ).fetchone()
             if substitute is None:
                 raise LeaveResourceNotFound("leave_resource_not_found")
+
+        # Serialize overlap checks with the write transaction. Pending and approved
+        # requests reserve dates; rejected requests do not. Date ranges are inclusive.
+        overlap = conn.execute(
+            """SELECT 1 FROM leave_requests
+               WHERE teacher_id = ?
+                 AND status IN ('pending', 'approved')
+                 AND start_date <= ? AND end_date >= ?
+               LIMIT 1""",
+            (teacher_id, end_date, start_date),
+        ).fetchone()
+        if overlap is not None:
+            raise LeaveDateOverlapError("leave_dates_overlap")
 
         # Only an explicit zero disables approval; NULL/corrupt legacy values fail closed.
         requires_approval = leave_type["requires_approval"] != 0
