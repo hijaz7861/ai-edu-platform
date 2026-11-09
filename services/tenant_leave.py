@@ -156,7 +156,8 @@ def create_school_leave_request(
             if substitute is None:
                 raise LeaveResourceNotFound("leave_resource_not_found")
 
-        requires_approval = bool(leave_type["requires_approval"])
+        # Only an explicit zero disables approval; NULL/corrupt legacy values fail closed.
+        requires_approval = leave_type["requires_approval"] != 0
         approval_levels = (
             2 if requires_approval and bool(leave_type["multi_level_approval"])
             else 1 if requires_approval else 0
