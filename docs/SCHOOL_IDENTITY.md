@@ -93,3 +93,11 @@ by tenant, entitlement and role-negative tests.
 - An `Idempotency-Key` is mandatory. The key is SHA-256 hashed at rest and scoped to institution. Its retry record expires after 24 hours and is pruned on the next leave submission for that institution; a global scheduled purge for dormant tenants remains an operations/retention task. A transaction creates the request, approval rows, audit event and idempotency record atomically. Same actor + same key + same payload within the retry window replays the original request; a different actor or payload returns 409.
 - Leave types configured with one or two approval levels create the corresponding pending approval rows. A leave type explicitly configured with `requires_approval=0` is created as approved with no approval rows; NULL or malformed legacy values fail closed and require approval. This does not expose approval/rejection APIs.
 - Regression coverage includes cross-tenant teacher/type/substitute denial, five-role allow/deny behavior, idempotency replay/conflict, CSRF and missing-key rejection, date/reason validation, production entitlement denial/allowance, multi-level and no-approval configuration, and response privacy.
+
+
+## Leave date-overlap protection
+
+- Leave submission checks for an existing pending or approved request for the same tenant-owned teacher whose inclusive date range overlaps the requested range.
+- The check runs after BEGIN IMMEDIATE and before insertion, so concurrent submissions against the same SQLite database are serialized; a conflicting request returns HTTP 409 with leave_dates_overlap.
+- Rejected requests do not reserve dates. Adjacent ranges are allowed (for example, an existing request ending on 12 December and a new request starting on 13 December).
+- This is a date-overlap guard, not a leave-balance or working-day calculation. Annual balance accounting, holidays/weekends, partial-day leave and approval/rejection endpoints remain outstanding.
