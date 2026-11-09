@@ -497,3 +497,42 @@ def test_school_leave_submission_honors_configured_approval_levels(leave_env):
         (malformed_response.get_json()["id"],),
     ).fetchone()[0] == 1
     conn.close()
+
+
+def test_school_leave_submission_rejects_overlapping_active_leave_but_allows_adjacent_dates(leave_env):
+    e = leave_env
+    client = e["app"].app.test_client()
+    csrf = login(client, e["users"]["Institution Admin"])
+    base_payload = {
+        "teacher_id": e["teacher_a"],
+        "leave_type_id": e["leave_type_a"],
+        "start_date": "2026-12-10",
+        "end_date": "2026-12-12",
+        "reason": "Initial approved-period reservation",
+    }
+    first = _submit_leave(client, csrf, "leave-overlap-base-0001", base_payload)
+    assert first.status_code == 201
+
+    overlapping = dict(base_payload, start_date="2026-12-12", end_date="2026-12-14", reason="Overlapping request must be rejected")
+    denied = _submit_leave(client, csrf, "leave-overlap-conflict-01", overlapping)
+    assert denied.status_code == 409
+    assert denied.get_json() == {"error": "leave_dates_overlap"}
+
+    adjacent = dict(base_payload, start_date="2026-12-13", end_date="2026-12-14", reason="Immediately following non-overlapping request")
+    accepted = _submit_leave(client, csrf, "leave-overlap-adjacent-01", adjacent)
+    assert accepted.status_code == 201
+
+    conn = init_db(e["path"])
+    rejected_id = uuid.uuid4().hex
+    conn.execute(
+        """INSERT INTO leave_requests
+           (id, teacher_id, leave_type_id, start_date, end_date, reason, status, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'rejected', ?)""",
+        (rejected_id, e["teacher_a"], e["leave_type_a"], "2026-12-20", "2026-12-22", "Rejected historical request", "2026-11-09T00:00:00+00:00"),
+    )
+    conn.commit()
+    conn.close()
+
+    after_rejection = dict(base_payload, start_date="2026-12-20", end_date="2026-12-22", reason="Rejected requests do not reserve leave dates")
+    allowed = _submit_leave(client, csrf, "leave-overlap-rejected-01", after_rejection)
+    assert allowed.status_code == 201
