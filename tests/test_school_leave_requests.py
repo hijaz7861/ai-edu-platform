@@ -421,7 +421,11 @@ def test_school_leave_submission_honors_configured_approval_levels(leave_env):
     automatic = attendance.create_leave_type(
         conn, e["tenant_a"], "No Approval Leave", 5
     )
+    malformed = attendance.create_leave_type(
+        conn, e["tenant_a"], "Malformed Approval Leave", 5
+    )
     conn.execute("UPDATE leave_types SET requires_approval=0 WHERE id=?", (automatic,))
+    conn.execute("UPDATE leave_types SET requires_approval=NULL WHERE id=?", (malformed,))
     conn.commit()
     conn.close()
 
@@ -443,10 +447,20 @@ def test_school_leave_submission_honors_configured_approval_levels(leave_env):
             "reason": "Configured no-approval leave",
         },
     )
+    malformed_response = _submit_leave(
+        client, csrf, "leave-malformed-approval-0001",
+        {
+            "teacher_id": e["teacher_a"], "leave_type_id": malformed,
+            "start_date": "2026-12-04", "end_date": "2026-12-04",
+            "reason": "Malformed policy must fail closed",
+        },
+    )
     assert multi_response.status_code == 201
     assert multi_response.get_json()["status"] == "pending"
     assert auto_response.status_code == 201
     assert auto_response.get_json()["status"] == "approved"
+    assert malformed_response.status_code == 201
+    assert malformed_response.get_json()["status"] == "pending"
 
     conn = init_db(e["path"])
     assert conn.execute(
@@ -457,4 +471,8 @@ def test_school_leave_submission_honors_configured_approval_levels(leave_env):
         "SELECT COUNT(*) FROM leave_approvals WHERE leave_request_id=?",
         (auto_response.get_json()["id"],),
     ).fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM leave_approvals WHERE leave_request_id=?",
+        (malformed_response.get_json()["id"],),
+    ).fetchone()[0] == 1
     conn.close()
