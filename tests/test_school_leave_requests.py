@@ -1,4 +1,4 @@
-"""Tenant-isolation and least-privilege tests for school leave-request reads."""
+"""Tenant-isolation, submission and approval tests for school leave workflows."""
 import re
 import uuid
 
@@ -549,3 +549,292 @@ def test_school_leave_submission_rejects_overlapping_active_leave_but_allows_adj
     after_rejection = dict(base_payload, start_date="2026-12-20", end_date="2026-12-22", reason="Rejected requests do not reserve leave dates")
     allowed = _submit_leave(client, csrf, "leave-overlap-rejected-01", after_rejection)
     assert allowed.status_code == 201
+
+
+def _decide_leave(client, csrf, request_id, decision, comments=None):
+    payload = {"decision": decision}
+    if comments is not None:
+        payload["comments"] = comments
+    return client.post(
+        f"/api/school/leave-requests/{request_id}/decision",
+        json=payload,
+        headers={"X-CSRF-Token": csrf},
+    )
+
+
+def test_school_leave_approval_requires_approve_permission_and_tenant_scope(leave_env):
+    e = leave_env
+    admin_client = e["app"].app.test_client()
+    admin_csrf = login(admin_client, e["users"]["Institution Admin"])
+    expected = {
+        "Institution Admin": 403,
+        "Principal": 200,
+        "Academic Coordinator": 403,
+        "Examiner": 403,
+        "HR/Attendance Officer": 200,
+    }
+    for index, (role_name, status) in enumerate(expected.items()):
+        start_day = 1 + index * 2
+        start_date = f"2027-01-{start_day:02d}"
+        end_date = f"2027-01-{start_day + 1:02d}"
+        created = _submit_leave(
+            admin_client,
+            admin_csrf,
+            f"approval-role-{index:02d}",
+            {
+                "teacher_id": e["teacher_a"],
+                "leave_type_id": e["leave_type_a"],
+                "start_date": start_date,
+                "end_date": end_date,
+                "reason": "Role-matrix approval test",
+            },
+        )
+        assert created.status_code == 201
+        approver_client = e["app"].app.test_client()
+        approver_csrf = login(approver_client, e["users"][role_name])
+        response = _decide_leave(
+            approver_client, approver_csrf, created.get_json()["id"], "approved"
+        )
+        assert response.status_code == status, role_name
+        if status == 403:
+            assert response.get_json() == {"error": "permission_denied"}
+
+    conn = init_db(e["path"])
+    tenant_b_principal = identity.create_school_user(
+        conn,
+        email=f"tenant-b-principal-{uuid.uuid4().hex[:8]}@school.example",
+        password="correct horse battery staple",
+        institution_id=e["tenant_b"],
+        role_name="Principal",
+        granted_by="platform-admin",
+    )
+    conn.close()
+    tenant_b_client = e["app"].app.test_client()
+    tenant_b_csrf = login(tenant_b_client, tenant_b_principal)
+    tenant_b_request = _submit_leave(
+        tenant_b_client,
+        tenant_b_csrf,
+        "tenant-b-approval-01",
+        {
+            "teacher_id": e["teacher_b"],
+            "leave_type_id": e["leave_type_b"],
+            "start_date": "2027-02-01",
+            "end_date": "2027-02-02",
+            "reason": "Tenant B request",
+        },
+    )
+    assert tenant_b_request.status_code == 201
+
+    tenant_a_principal = e["app"].app.test_client()
+    tenant_a_csrf = login(tenant_a_principal, e["users"]["Principal"])
+    cross_tenant = _decide_leave(
+        tenant_a_principal,
+        tenant_a_csrf,
+        tenant_b_request.get_json()["id"],
+        "approved",
+    )
+    assert cross_tenant.status_code == 404
+    assert cross_tenant.get_json() == {"error": "leave_resource_not_found"}
+
+
+def test_school_leave_approval_is_ordered_distinct_and_idempotent(leave_env):
+    e = leave_env
+    conn = init_db(e["path"])
+    multi_type = attendance.create_leave_type(
+        conn, e["tenant_a"], "Two-level Approval", 15, multi_level=True
+    )
+    conn.close()
+
+    admin_client = e["app"].app.test_client()
+    admin_csrf = login(admin_client, e["users"]["Institution Admin"])
+    created = _submit_leave(
+        admin_client,
+        admin_csrf,
+        "approval-two-level-0001",
+        {
+            "teacher_id": e["teacher_a"],
+            "leave_type_id": multi_type,
+            "start_date": "2027-03-01",
+            "end_date": "2027-03-02",
+            "reason": "Two distinct approvals required",
+        },
+    )
+    assert created.status_code == 201
+    request_id = created.get_json()["id"]
+
+    principal = e["app"].app.test_client()
+    principal_csrf = login(principal, e["users"]["Principal"])
+    first = _decide_leave(
+        principal, principal_csrf, request_id, "approved", "First-level review"
+    )
+    assert first.status_code == 200
+    assert first.get_json() == {
+        "id": request_id, "decision": "approved", "level": 1, "status": "pending"
+    }
+
+    replay = _decide_leave(
+        principal, principal_csrf, request_id, "approved", "First-level review"
+    )
+    assert replay.status_code == 200
+    assert replay.get_json() == first.get_json()
+
+    same_actor_next_level = _decide_leave(
+        principal, principal_csrf, request_id, "approved", "Second-level attempt"
+    )
+    assert same_actor_next_level.status_code == 409
+    assert same_actor_next_level.get_json() == {"error": "leave_approval_conflict"}
+
+    hr = e["app"].app.test_client()
+    hr_csrf = login(hr, e["users"]["HR/Attendance Officer"])
+    second = _decide_leave(
+        hr, hr_csrf, request_id, "approved", "Second-level review"
+    )
+    assert second.status_code == 200
+    assert second.get_json() == {
+        "id": request_id, "decision": "approved", "level": 2, "status": "approved"
+    }
+    assert "comments" not in second.get_json()
+    assert "approver_id" not in second.get_json()
+
+    second_replay = _decide_leave(
+        hr, hr_csrf, request_id, "approved", "Second-level review"
+    )
+    assert second_replay.status_code == 200
+    assert second_replay.get_json() == second.get_json()
+
+    conn = init_db(e["path"])
+    approvals = conn.execute(
+        """SELECT level, approver_id, decision, comments
+           FROM leave_approvals WHERE leave_request_id=? ORDER BY level""",
+        (request_id,),
+    ).fetchall()
+    assert [row["decision"] for row in approvals] == ["approved", "approved"]
+    assert approvals[0]["approver_id"] != approvals[1]["approver_id"]
+    assert [row["comments"] for row in approvals] == [
+        "First-level review", "Second-level review"
+    ]
+    assert conn.execute(
+        """SELECT COUNT(*) FROM audit_log
+           WHERE action_type='school_leave_approval_decided' AND entity_id=?""",
+        (request_id,),
+    ).fetchone()[0] == 2
+    audit = conn.execute(
+        """SELECT after_state FROM audit_log
+           WHERE action_type='school_leave_approval_decided' AND entity_id=?""",
+        (request_id,),
+    ).fetchall()
+    assert all("review" not in row["after_state"].lower() for row in audit)
+    conn.close()
+
+
+def test_school_leave_approval_rejects_self_approval_and_terminal_mutation(leave_env):
+    e = leave_env
+    principal = e["app"].app.test_client()
+    principal_csrf = login(principal, e["users"]["Principal"])
+    self_request = _submit_leave(
+        principal,
+        principal_csrf,
+        "self-approval-request-01",
+        {
+            "teacher_id": e["teacher_a"],
+            "leave_type_id": e["leave_type_a"],
+            "start_date": "2027-04-01",
+            "end_date": "2027-04-02",
+            "reason": "Requester must not approve own request",
+        },
+    )
+    assert self_request.status_code == 201
+    self_decision = _decide_leave(
+        principal, principal_csrf, self_request.get_json()["id"], "approved"
+    )
+    assert self_decision.status_code == 403
+    assert self_decision.get_json() == {"error": "permission_denied"}
+
+    admin = e["app"].app.test_client()
+    admin_csrf = login(admin, e["users"]["Institution Admin"])
+    created = _submit_leave(
+        admin,
+        admin_csrf,
+        "terminal-approval-request-01",
+        {
+            "teacher_id": e["teacher_a"],
+            "leave_type_id": e["leave_type_a"],
+            "start_date": "2027-04-05",
+            "end_date": "2027-04-06",
+            "reason": "Rejection must be terminal",
+        },
+    )
+    assert created.status_code == 201
+    request_id = created.get_json()["id"]
+
+    hr = e["app"].app.test_client()
+    hr_csrf = login(hr, e["users"]["HR/Attendance Officer"])
+    rejected = _decide_leave(hr, hr_csrf, request_id, "rejected", "Policy mismatch")
+    assert rejected.status_code == 200
+    assert rejected.get_json()["status"] == "rejected"
+    repeated = _decide_leave(hr, hr_csrf, request_id, "rejected", "Policy mismatch")
+    assert repeated.status_code == 200
+    assert repeated.get_json() == rejected.get_json()
+
+    principal_approver = e["app"].app.test_client()
+    principal_approver_csrf = login(
+        principal_approver, e["users"]["Principal"]
+    )
+    terminal_change = _decide_leave(
+        principal_approver, principal_approver_csrf, request_id, "approved"
+    )
+    assert terminal_change.status_code == 409
+    assert terminal_change.get_json() == {"error": "leave_approval_conflict"}
+
+
+def test_school_leave_approval_requires_active_entitlement_in_production(
+    leave_env, monkeypatch
+):
+    e = leave_env
+    admin = e["app"].app.test_client()
+    admin_csrf = login(admin, e["users"]["Institution Admin"])
+    created = _submit_leave(
+        admin,
+        admin_csrf,
+        "approval-entitlement-request-01",
+        {
+            "teacher_id": e["teacher_a"],
+            "leave_type_id": e["leave_type_a"],
+            "start_date": "2027-05-01",
+            "end_date": "2027-05-02",
+            "reason": "Entitlement must gate approval",
+        },
+    )
+    assert created.status_code == 201
+
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setattr(e["app"], "allow_request", lambda *args, **kwargs: True)
+    principal = e["app"].app.test_client()
+    principal_csrf = login(principal, e["users"]["Principal"])
+    denied = _decide_leave(
+        principal, principal_csrf, created.get_json()["id"], "approved"
+    )
+    assert denied.status_code == 403
+    assert denied.get_json() == {"error": "subscription_required"}
+
+    conn = init_db(e["path"])
+    plan_id = create_plan(
+        conn,
+        code="leave-approval-" + uuid.uuid4().hex[:8],
+        name="Leave Approval Test",
+        entitlements={"leave_management": True},
+    )
+    grant_subscription(
+        conn,
+        institution_id=e["tenant_a"],
+        plan_id=plan_id,
+        granted_by="platform-admin",
+        reason="automated leave approval entitlement test",
+    )
+    conn.close()
+
+    allowed = _decide_leave(
+        principal, principal_csrf, created.get_json()["id"], "approved"
+    )
+    assert allowed.status_code == 200
+    assert allowed.get_json()["status"] == "approved"
