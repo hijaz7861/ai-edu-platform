@@ -44,13 +44,13 @@ and the `attendance` entitlement. Leave-request reads require
 `manage_institution`, `approve_leave`, or `view_all_reports` and the
 `leave_management` entitlement.
 
-| Institution role | Read own profile | List own classes | Create class | List question-bank metadata | List exam-blueprint metadata | Read attendance | List leave requests | Create leave request | Enqueue job | Read tenant job |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Institution Admin | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| Principal | Yes | Yes | No | No | Yes | Yes | Yes | Yes | No | Yes |
-| Academic Coordinator | Yes | Yes | No | Yes | Yes | No | No | No | No | No |
-| Examiner | Yes | No | No | Yes | Yes | No | No | No | No | No |
-| HR/Attendance Officer | Yes | No | No | No | No | Yes | Yes | Yes | No | No |
+| Institution role | Read own profile | List own classes | Create class | List question-bank metadata | List exam-blueprint metadata | Read attendance | List leave requests | Create leave request | Decide leave approval | Enqueue job | Read tenant job |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Institution Admin | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No | Yes | Yes |
+| Principal | Yes | Yes | No | No | Yes | Yes | Yes | Yes | Yes | No | Yes |
+| Academic Coordinator | Yes | Yes | No | Yes | Yes | No | No | No | No | No | No |
+| Examiner | Yes | No | No | Yes | Yes | No | No | No | No | No | No |
+| HR/Attendance Officer | Yes | No | No | No | No | Yes | Yes | Yes | Yes | No | No |
 
 This is not a blanket permission for future endpoints. New routes and methods
 remain denied until explicitly added to the exact route allowlist and covered
@@ -80,7 +80,7 @@ by tenant, entitlement and role-negative tests.
 - Access requires an institution-scoped `manage_institution`, `approve_leave`, or `view_all_reports` permission and the `leave_management` subscription entitlement when entitlement enforcement is enabled.
 - The optional `status` filter accepts one of `pending`, `approved`, or `rejected`. Duplicate/invalid status values and unsupported query parameters are rejected; a supplied `institution_id` is ignored.
 - The response includes only request ID, teacher ID, leave-type name, dates, status and creation timestamp. It excludes free-text reasons, substitute-teacher IDs, approver identities and approval comments.
-- Leave submission is now available through `POST /api/school/leave-requests`. It is limited to Institution Admin, Principal and HR/Attendance Officer, requires the `leave_management` entitlement when enforcement is enabled, and requires a CSRF token plus an `Idempotency-Key`. The service revalidates the actor and institution inside `BEGIN IMMEDIATE`, checks that the teacher, leave type and optional substitute teacher all belong to the authenticated institution, and atomically creates the request, configured approval rows, audit event and hashed idempotency record. Replaying the same key and payload by the same actor returns the original request; a different payload or actor receives 409. The response never returns the free-text reason. Approval/rejection decisions and correction mutations remain unexposed until their own transactional, ordered-approval and audit rules are implemented.
+- Leave submission is now available through `POST /api/school/leave-requests`. It is limited to Institution Admin, Principal and HR/Attendance Officer, requires the `leave_management` entitlement when enforcement is enabled, and requires a CSRF token plus an `Idempotency-Key`. The service revalidates the actor and institution inside `BEGIN IMMEDIATE`, checks that the teacher, leave type and optional substitute teacher all belong to the authenticated institution, and atomically creates the request, configured approval rows, audit event and hashed idempotency record. Replaying the same key and payload by the same actor returns the original request; a different payload or actor receives 409. The response never returns the free-text reason. Leave approval/rejection decisions are exposed through the separate transactional, ordered decision endpoint described below; attendance and leave-correction mutations remain unexposed.
 
 
 ## Tenant-scoped leave-request submission
@@ -101,3 +101,14 @@ by tenant, entitlement and role-negative tests.
 - The check runs after BEGIN IMMEDIATE and before insertion, so concurrent submissions against the same SQLite database are serialized; a conflicting request returns HTTP 409 with leave_dates_overlap.
 - Rejected requests do not reserve dates. Adjacent ranges are allowed (for example, an existing request ending on 12 December and a new request starting on 13 December).
 - This is a date-overlap guard, not a leave-balance or working-day calculation. Annual balance accounting, holidays/weekends, partial-day leave and approval/rejection endpoints remain outstanding.
+
+
+## Tenant-scoped leave approval decisions
+
+- `POST /api/school/leave-requests/<request_id>/decision` accepts only `decision` (`approved` or `rejected`) and optional `comments` (maximum 2,000 characters). Tenant and actor are derived from the revalidated school session; the endpoint requires CSRF and the `leave_management` entitlement when entitlement enforcement is active.
+- Only an institution-scoped `approve_leave` permission can decide. `manage_institution` by itself is deliberately insufficient: Institution Admins can submit and manage other school settings but cannot approve leave unless they are separately granted `approve_leave`. Principal and HR/Attendance Officer have the default permission.
+- The service revalidates the active user/institution/role and permission inside `BEGIN IMMEDIATE`, then joins both the request's teacher and leave type to the authenticated institution. A foreign-tenant or inconsistent legacy request returns the same 404 as an unknown request.
+- Only the next pending approval level can be decided. Earlier levels must be approved; future levels must still be pending. The request creator cannot approve their own submission, and one actor cannot approve multiple levels of the same request. Multi-level requests therefore require distinct approvers.
+- The decision row, parent request status and append-only audit event commit in one transaction. Rejection is terminal; approval changes the request to `approved` only when every level has approved. Auto-approved leave types have no approval rows and cannot be decided again.
+- A retry by the same approver with the same decision and comments returns the original level and current aggregate status without adding another audit event. A changed decision/comment or a second actor attempting to reuse a completed level receives 409. Comments are stored with the approval record but are not returned in the API response or copied into the audit event.
+- This is an ordered approval workflow, not leave-balance accounting. Annual balances, working-day/holiday calculations, partial-day leave, cancellation and corrections remain outstanding.
