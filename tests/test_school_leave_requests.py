@@ -288,7 +288,20 @@ def test_school_leave_submission_is_tenant_bound_and_idempotent(leave_env):
     )
     conn.commit()
     conn.close()
-    expired_replay = _submit_leave(client, csrf, "leave-submit-0001", payload)
+    # Expiring idempotency metadata must not let the same active date range
+    # be submitted again; the overlap guard remains authoritative.
+    expired_overlap = _submit_leave(client, csrf, "leave-submit-0001", payload)
+    assert expired_overlap.status_code == 409
+    assert expired_overlap.get_json() == {"error": "leave_dates_overlap"}
+
+    # Once the old key has expired, it may be reused for a genuinely new,
+    # non-overlapping request.
+    replacement_payload = dict(
+        payload, start_date="2026-11-25", end_date="2026-11-26"
+    )
+    expired_replay = _submit_leave(
+        client, csrf, "leave-submit-0001", replacement_payload
+    )
     assert expired_replay.status_code == 201
     assert expired_replay.get_json()["id"] != first.get_json()["id"]
 
@@ -456,7 +469,7 @@ def test_school_leave_submission_honors_configured_approval_levels(leave_env):
         client, csrf, "leave-multilevel-0001",
         {
             "teacher_id": e["teacher_a"], "leave_type_id": multi,
-            "start_date": "2026-12-01", "end_date": "2026-12-02",
+            "start_date": "2026-12-05", "end_date": "2026-12-06",
             "reason": "Two-step approval",
         },
     )
@@ -464,7 +477,7 @@ def test_school_leave_submission_honors_configured_approval_levels(leave_env):
         client, csrf, "leave-auto-approve-0001",
         {
             "teacher_id": e["teacher_a"], "leave_type_id": automatic,
-            "start_date": "2026-12-03", "end_date": "2026-12-03",
+            "start_date": "2026-12-07", "end_date": "2026-12-07",
             "reason": "Configured no-approval leave",
         },
     )
@@ -472,7 +485,7 @@ def test_school_leave_submission_honors_configured_approval_levels(leave_env):
         client, csrf, "leave-malformed-approval-0001",
         {
             "teacher_id": e["teacher_a"], "leave_type_id": malformed,
-            "start_date": "2026-12-04", "end_date": "2026-12-04",
+            "start_date": "2026-12-08", "end_date": "2026-12-08",
             "reason": "Malformed policy must fail closed",
         },
     )
