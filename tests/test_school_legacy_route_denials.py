@@ -19,6 +19,7 @@ SCHOOL_API_ROUTE_METHODS = frozenset({
     ("school_attendance", "GET"),
     ("school_leave_requests", "GET"),
     ("school_create_leave_request", "POST"),
+    ("school_decide_leave_approval", "POST"),
     ("school_create_job", "POST"),
     ("school_get_job", "GET"),
 })
