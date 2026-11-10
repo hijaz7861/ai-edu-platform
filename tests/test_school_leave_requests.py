@@ -838,3 +838,26 @@ def test_school_leave_approval_requires_active_entitlement_in_production(
     )
     assert allowed.status_code == 200
     assert allowed.get_json()["status"] == "approved"
+
+
+@pytest.mark.parametrize("decision", [None, [], {}, "pending"])
+def test_school_leave_approval_rejects_malformed_decision_values(leave_env, decision):
+    e = leave_env
+    principal = e["app"].app.test_client()
+    csrf = login(principal, e["users"]["Principal"])
+    response = _decide_leave(
+        principal, csrf, e["request_a"], decision
+    )
+    assert response.status_code == 400
+    assert response.get_json() == {"error": "invalid_leave_decision"}
+
+
+def test_school_leave_approval_fails_closed_for_legacy_request_without_creator_audit(leave_env):
+    e = leave_env
+    principal = e["app"].app.test_client()
+    csrf = login(principal, e["users"]["Principal"])
+    response = _decide_leave(
+        principal, csrf, e["request_a"], "approved"
+    )
+    assert response.status_code == 409
+    assert response.get_json() == {"error": "leave_approval_conflict"}
