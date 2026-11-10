@@ -264,7 +264,7 @@ def decide_school_leave_approval(
     leave_request_id = _required_identifier(
         leave_request_id, "leave_request_id_required"
     )
-    if decision not in {"approved", "rejected"}:
+    if not isinstance(decision, str) or decision not in {"approved", "rejected"}:
         raise ValueError("invalid_leave_decision")
     if comments is None:
         comments = ""
@@ -349,7 +349,11 @@ def decide_school_leave_approval(
                LIMIT 1""",
             (institution_id, leave_request_id),
         ).fetchone()
-        if creator is not None and creator["actor_id"] == actor_id:
+        if creator is None:
+            # Legacy requests without a recorded creator cannot prove separation
+            # of duties, so do not allow a school-session decision on them.
+            raise LeaveApprovalConflict("leave_request_creator_unknown")
+        if creator["actor_id"] == actor_id:
             raise LeaveAuthorizationError("self_approval_not_allowed")
 
         if any(row["approver_id"] == actor_id for row in approvals):
