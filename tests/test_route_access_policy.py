@@ -28,6 +28,7 @@ def test_every_registered_route_method_has_an_explicit_access_policy():
         ("dashboard_api.dashboard_stats", "GET", "platform_admin"),
         ("dashboard_api.admin_grant_subscription", "POST", "platform_admin"),
         ("school_create_job", "POST", "school_user"),
+        ("school_decide_leave_approval", "POST", "school_user"),
         ("api_status", "GET", "public"),
         ("logout", "POST", "authenticated"),
         ("future_blueprint.export_all", "GET", "unclassified"),
