@@ -233,3 +233,198 @@ def create_school_leave_request(
     except Exception:
         conn.rollback()
         raise
+
+
+class LeaveApprovalConflict(ValueError):
+    """The leave request or ordered approval state cannot accept this decision."""
+
+
+def decide_school_leave_approval(
+    conn,
+    *,
+    institution_id,
+    actor_id,
+    leave_request_id,
+    decision,
+    comments=None,
+):
+    """Record one ordered, tenant-bound leave approval decision atomically.
+
+    A retry by the same approver with the same decision/comments is idempotent.
+    Each approval level must be handled by a distinct approver, and the request
+    creator cannot approve their own submission.
+    """
+    if conn.in_transaction:
+        raise ValueError("connection_has_open_transaction")
+
+    institution_id = _required_identifier(
+        institution_id, "active_tenant_identity_required"
+    )
+    actor_id = _required_identifier(actor_id, "active_tenant_identity_required")
+    leave_request_id = _required_identifier(
+        leave_request_id, "leave_request_id_required"
+    )
+    if decision not in {"approved", "rejected"}:
+        raise ValueError("invalid_leave_decision")
+    if comments is None:
+        comments = ""
+    if not isinstance(comments, str) or len(comments.strip()) > 2000:
+        raise ValueError("comments_must_be_at_most_2000_characters")
+    comments = comments.strip()
+    if "\x00" in comments:
+        raise ValueError("invalid_comments")
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if not identity.active_tenant_identity(
+            conn, user_id=actor_id, institution_id=institution_id
+        ):
+            raise LeaveAuthorizationError("active_tenant_identity_required")
+        permissions = identity.institution_permissions(
+            conn, user_id=actor_id, institution_id=institution_id
+        )
+        if not ({"*", "approve_leave"} & permissions):
+            raise LeaveAuthorizationError("leave_approval_denied")
+
+        leave_request = conn.execute(
+            """SELECT lr.id, lr.status
+               FROM leave_requests lr
+               JOIN teachers t ON t.id = lr.teacher_id
+               JOIN leave_types lt ON lt.id = lr.leave_type_id
+               WHERE lr.id = ?
+                 AND t.institution_id = ?
+                 AND lt.institution_id = ?""",
+            (leave_request_id, institution_id, institution_id),
+        ).fetchone()
+        if leave_request is None:
+            raise LeaveResourceNotFound("leave_resource_not_found")
+
+        approvals = conn.execute(
+            """SELECT id, level, approver_id, decision, comments
+               FROM leave_approvals
+               WHERE leave_request_id = ?
+               ORDER BY level ASC, id ASC""",
+            (leave_request_id,),
+        ).fetchall()
+        if not approvals:
+            raise LeaveApprovalConflict("leave_request_has_no_approval_steps")
+
+        levels = [row["level"] for row in approvals]
+        if levels != list(range(1, len(approvals) + 1)):
+            raise LeaveApprovalConflict("leave_approval_sequence_invalid")
+        if any(row["decision"] not in {"pending", "approved", "rejected"} for row in approvals):
+            raise LeaveApprovalConflict("leave_approval_state_invalid")
+
+        # A retry of a previously committed decision returns the current
+        # aggregate state without writing another audit event.
+        replay = next(
+            (
+                row for row in approvals
+                if row["approver_id"] == actor_id
+                and row["decision"] == decision
+                and (row["comments"] or "") == comments
+            ),
+            None,
+        )
+        if replay is not None:
+            conn.commit()
+            return {
+                "id": leave_request_id,
+                "decision": decision,
+                "level": replay["level"],
+                "status": leave_request["status"],
+            }
+
+        if leave_request["status"] != "pending":
+            raise LeaveApprovalConflict("leave_request_not_pending")
+
+        creator = conn.execute(
+            """SELECT actor_id
+               FROM audit_log
+               WHERE institution_id = ?
+                 AND action_type = 'school_leave_request_created'
+                 AND entity_type = 'leave_requests'
+                 AND entity_id = ?
+               ORDER BY timestamp ASC, id ASC
+               LIMIT 1""",
+            (institution_id, leave_request_id),
+        ).fetchone()
+        if creator is not None and creator["actor_id"] == actor_id:
+            raise LeaveAuthorizationError("self_approval_not_allowed")
+
+        if any(row["approver_id"] == actor_id for row in approvals):
+            raise LeaveApprovalConflict("approver_already_used_for_request")
+
+        first_pending = next(
+            (index for index, row in enumerate(approvals) if row["decision"] == "pending"),
+            None,
+        )
+        if first_pending is None:
+            raise LeaveApprovalConflict("leave_approval_already_complete")
+        if any(row["decision"] != "approved" for row in approvals[:first_pending]):
+            raise LeaveApprovalConflict("prior_approval_level_incomplete")
+        if any(row["decision"] != "pending" for row in approvals[first_pending + 1:]):
+            raise LeaveApprovalConflict("future_approval_level_already_decided")
+
+        current = approvals[first_pending]
+        decided_at = datetime.now(timezone.utc).isoformat()
+        changed = conn.execute(
+            """UPDATE leave_approvals
+               SET decision = ?, approver_id = ?, decided_at = ?, comments = ?
+               WHERE id = ? AND decision = 'pending'""",
+            (decision, actor_id, decided_at, comments, current["id"]),
+        )
+        if changed.rowcount != 1:
+            raise LeaveApprovalConflict("leave_approval_changed_concurrently")
+
+        if decision == "rejected":
+            status = "rejected"
+        else:
+            remaining = conn.execute(
+                """SELECT COUNT(*) FROM leave_approvals
+                   WHERE leave_request_id = ? AND decision != 'approved'""",
+                (leave_request_id,),
+            ).fetchone()[0]
+            status = "approved" if remaining == 0 else "pending"
+
+        updated = conn.execute(
+            """UPDATE leave_requests SET status = ?
+               WHERE id = ? AND status = 'pending'""",
+            (status, leave_request_id),
+        )
+        if updated.rowcount != 1:
+            raise LeaveApprovalConflict("leave_request_changed_concurrently")
+
+        conn.execute(
+            """INSERT INTO audit_log
+               (id, institution_id, actor_id, action_type, entity_type,
+                entity_id, before_state, after_state, timestamp)
+               VALUES (?, ?, ?, 'school_leave_approval_decided',
+                       'leave_requests', ?, ?, ?, ?)""",
+            (
+                uuid.uuid4().hex,
+                institution_id,
+                actor_id,
+                leave_request_id,
+                json.dumps({"status": "pending"}, sort_keys=True),
+                json.dumps(
+                    {
+                        "decision": decision,
+                        "level": current["level"],
+                        "status": status,
+                    },
+                    sort_keys=True,
+                ),
+                decided_at,
+            ),
+        )
+        conn.commit()
+        return {
+            "id": leave_request_id,
+            "decision": decision,
+            "level": current["level"],
+            "status": status,
+        }
+    except Exception:
+        conn.rollback()
+        raise
