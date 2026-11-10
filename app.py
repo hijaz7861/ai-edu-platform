@@ -23,8 +23,9 @@ from services.security_audit import append_security_event
 from services import identity
 from services.tenant_jobs import enqueue_job, get_tenant_job, JobAuthorizationError, IdempotencyConflict
 from services.tenant_leave import (
-    create_school_leave_request, LeaveAuthorizationError,
-    LeaveIdempotencyConflict, LeaveResourceNotFound, LeaveDateOverlapError,
+    create_school_leave_request, decide_school_leave_approval,
+    LeaveAuthorizationError, LeaveIdempotencyConflict,
+    LeaveResourceNotFound, LeaveDateOverlapError, LeaveApprovalConflict,
 )
 from providers.base import get_default_registry
 from dashboard_api import dashboard_api
@@ -189,6 +190,7 @@ _SCHOOL_API_ROUTE_METHODS = frozenset({
     ("school_attendance", "GET"),
     ("school_leave_requests", "GET"),
     ("school_create_leave_request", "POST"),
+    ("school_decide_leave_approval", "POST"),
     ("school_create_job", "POST"),
     ("school_get_job", "GET"),
 })
@@ -216,6 +218,7 @@ _ROUTE_ACCESS_POLICIES = {
     "school_attendance": ("school_user", frozenset({"GET"})),
     "school_leave_requests": ("school_user", frozenset({"GET"})),
     "school_create_leave_request": ("school_user", frozenset({"POST"})),
+    "school_decide_leave_approval": ("school_user", frozenset({"POST"})),
     "school_create_job": ("school_user", frozenset({"POST"})),
     "school_get_job": ("school_user", frozenset({"GET"})),
     "admin_subscriptions_page": ("platform_admin", frozenset({"GET"})),
@@ -768,6 +771,45 @@ def school_create_leave_request():
         return err(str(exc), 400)
 
     return jsonify({"id": leave_request_id, "status": status}), 201 if created else 200
+
+
+@app.post("/api/school/leave-requests/<request_id>/decision")
+def school_decide_leave_approval(request_id):
+    """Record the next ordered leave approval/rejection for this tenant."""
+    body = request.get_json(silent=True)
+    if body is None:
+        if request.data:
+            return err("invalid_json", 400)
+        body = {}
+    if not isinstance(body, dict) or set(body) - {"decision", "comments"}:
+        return err("unsupported_payload", 400)
+    if "decision" not in body:
+        return err("required_fields_missing", 400)
+
+    institution_id = session["institution_id"]
+    access_error = _require_feature_access(institution_id, "leave_management")
+    if access_error:
+        return access_error
+
+    try:
+        result = decide_school_leave_approval(
+            get_db(),
+            institution_id=institution_id,
+            actor_id=session["user_id"],
+            leave_request_id=request_id,
+            decision=body.get("decision"),
+            comments=body.get("comments"),
+        )
+    except LeaveAuthorizationError:
+        return err("permission_denied", 403)
+    except LeaveResourceNotFound:
+        return err("leave_resource_not_found", 404)
+    except LeaveApprovalConflict:
+        return err("leave_approval_conflict", 409)
+    except ValueError as exc:
+        return err(str(exc), 400)
+
+    return jsonify(result)
 
 
 @app.post("/api/school/jobs")
