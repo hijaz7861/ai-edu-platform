@@ -22,6 +22,7 @@ def test_migrations_are_versioned_and_idempotent(tmp_path):
         (2, "tenant_background_jobs"),
         (3, "tenant_leave_request_idempotency"),
         (4, "tenant_leave_key_retention_window"),
+        (5, "tenant_attendance_event_idempotency"),
     ]
     assert _versions(first) == expected
     assert "password_hash" in {
@@ -29,6 +30,9 @@ def test_migrations_are_versioned_and_idempotent(tmp_path):
     }
     assert first.execute(
         "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='tenant_jobs'"
+    ).fetchone()[0] == 1
+    assert first.execute(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='tenant_attendance_event_keys'"
     ).fetchone()[0] == 1
     first.close()
 
@@ -138,6 +142,7 @@ def test_concurrent_database_initialization_applies_each_migration_once(tmp_path
         (2, "tenant_background_jobs"),
         (3, "tenant_leave_request_idempotency"),
         (4, "tenant_leave_key_retention_window"),
+        (5, "tenant_attendance_event_idempotency"),
     ]
     assert all(versions == expected and has_jobs for versions, has_jobs in results)
 
@@ -151,7 +156,7 @@ def test_tenant_leave_request_key_migration_has_expiry_column(tmp_path):
         ).fetchall()
     }
     assert {"idempotency_key_hash", "request_hash", "actor_id", "expires_at"} <= columns
-    assert _versions(conn)[-1] == (4, "tenant_leave_key_retention_window")
+    assert _versions(conn)[-1] == (5, "tenant_attendance_event_idempotency")
     conn.close()
 
 
@@ -207,5 +212,5 @@ def test_legacy_v3_leave_key_table_is_upgraded_for_expiry(tmp_path):
     }
     assert "tenant_leave_request_keys_no_update" not in triggers
     assert "tenant_leave_request_keys_no_delete" not in triggers
-    assert _versions(upgraded)[-1] == (4, "tenant_leave_key_retention_window")
+    assert _versions(upgraded)[-1] == (5, "tenant_attendance_event_idempotency")
     upgraded.close()

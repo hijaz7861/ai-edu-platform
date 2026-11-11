@@ -91,11 +91,34 @@ def _upgrade_tenant_leave_key_retention(conn: sqlite3.Connection) -> None:
     )
 
 
+def _add_tenant_attendance_event_keys(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS tenant_attendance_event_keys (
+            id TEXT PRIMARY KEY,
+            institution_id TEXT NOT NULL REFERENCES institutions(id) ON DELETE RESTRICT,
+            idempotency_key_hash TEXT NOT NULL,
+            request_hash TEXT NOT NULL,
+            attendance_event_id TEXT NOT NULL REFERENCES attendance_events(id) ON DELETE RESTRICT,
+            actor_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            UNIQUE (institution_id, idempotency_key_hash)
+        )
+        """
+    )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_tenant_attendance_event_keys_expiry
+           ON tenant_attendance_event_keys(institution_id, expires_at)"""
+    )
+
+
 _MIGRATIONS = (
     (1, "school_identity_password_hash", _add_school_password_hash),
     (2, "tenant_background_jobs", _add_tenant_job_schema),
     (3, "tenant_leave_request_idempotency", _add_tenant_leave_request_keys),
     (4, "tenant_leave_key_retention_window", _upgrade_tenant_leave_key_retention),
+    (5, "tenant_attendance_event_idempotency", _add_tenant_attendance_event_keys),
 )
 
 

@@ -27,6 +27,11 @@ from services.tenant_leave import (
     LeaveAuthorizationError, LeaveIdempotencyConflict,
     LeaveResourceNotFound, LeaveDateOverlapError, LeaveApprovalConflict,
 )
+from services.tenant_attendance import (
+    record_school_attendance_event, AttendanceAuthorizationError,
+    AttendanceEntitlementError, AttendanceResourceNotFound,
+    AttendanceIdempotencyConflict, AttendanceSequenceConflict,
+)
 from providers.base import get_default_registry
 from dashboard_api import dashboard_api
 
@@ -188,6 +193,7 @@ _SCHOOL_API_ROUTE_METHODS = frozenset({
     ("school_question_banks", "GET"),
     ("school_exam_blueprints", "GET"),
     ("school_attendance", "GET"),
+    ("school_create_attendance_event", "POST"),
     ("school_leave_requests", "GET"),
     ("school_create_leave_request", "POST"),
     ("school_decide_leave_approval", "POST"),
@@ -216,6 +222,7 @@ _ROUTE_ACCESS_POLICIES = {
     "school_question_banks": ("school_user", frozenset({"GET"})),
     "school_exam_blueprints": ("school_user", frozenset({"GET"})),
     "school_attendance": ("school_user", frozenset({"GET"})),
+    "school_create_attendance_event": ("school_user", frozenset({"POST"})),
     "school_leave_requests": ("school_user", frozenset({"GET"})),
     "school_create_leave_request": ("school_user", frozenset({"POST"})),
     "school_decide_leave_approval": ("school_user", frozenset({"POST"})),
@@ -674,6 +681,51 @@ def school_attendance():
 
     rows = get_db().execute(sql, params).fetchall()
     return jsonify({"attendance_events": [dict(row) for row in rows]})
+
+
+@app.post("/api/school/attendance/events")
+def school_create_attendance_event():
+    """Record a staff-assisted check-in or check-out for this tenant."""
+    body = request.get_json(silent=True)
+    if body is None:
+        if request.data:
+            return err("invalid_json", 400)
+        body = {}
+    if not isinstance(body, dict) or set(body) - {"teacher_id", "policy_id", "event_type", "time"}:
+        return err("unsupported_payload", 400)
+    if not {"teacher_id", "policy_id", "event_type", "time"}.issubset(body):
+        return err("required_fields_missing", 400)
+
+    institution_id = session["institution_id"]
+    access_error = _require_feature_access(institution_id, "attendance")
+    if access_error:
+        return access_error
+
+    try:
+        result = record_school_attendance_event(
+            get_db(),
+            institution_id=institution_id,
+            actor_id=session["user_id"],
+            teacher_id=body.get("teacher_id"),
+            policy_id=body.get("policy_id"),
+            event_type=body.get("event_type"),
+            timestamp_hhmm=body.get("time"),
+            idempotency_key=request.headers.get("Idempotency-Key"),
+        )
+    except AttendanceAuthorizationError:
+        return err("permission_denied", 403)
+    except AttendanceEntitlementError:
+        return err("subscription_required", 403)
+    except AttendanceResourceNotFound:
+        return err("attendance_resource_not_found", 404)
+    except AttendanceIdempotencyConflict:
+        return err("idempotency_key_conflict", 409)
+    except AttendanceSequenceConflict as exc:
+        return err(str(exc), 409)
+    except ValueError as exc:
+        return err(str(exc), 400)
+
+    return jsonify(result), 201 if result["created"] else 200
 
 
 @app.get("/api/school/leave-requests")

@@ -71,7 +71,7 @@ by tenant, entitlement and role-negative tests.
 - The endpoint requires an institution-scoped `manage_institution`, `view_all_reports`, or `manage_attendance_policy` permission and the `attendance` subscription entitlement when entitlement enforcement is enabled.
 - The optional `date=YYYY-MM-DD` filter applies to the UTC `created_at` date. Duplicate or invalid date filters and unsupported query parameters are rejected. A client-supplied `institution_id` is ignored and cannot switch tenants.
 - Both the attendance event and its linked teacher must belong to the authenticated institution. Responses contain only event/teacher identifiers, event type, time, method, status and creation timestamp; no email, reason, policy configuration or other tenant data is returned.
-- This is a read-only API. Mutation methods are denied by the exact school route/method allowlist. Existing platform-admin attendance write endpoints remain platform-admin-only; school-side check-in/out, leave workflows, corrections and approval actions are not implemented by this increment.
+- This is a read-only API. Mutation methods are denied by the exact school route/method allowlist. Existing platform-admin attendance write endpoints remain platform-admin-only; school-side attendance writes and corrections are separate workflows. Tenant-scoped leave reads, submission and ordered approval decisions are documented below.
 
 ## Tenant-scoped leave-request read API
 
@@ -91,7 +91,7 @@ by tenant, entitlement and role-negative tests.
 - The body accepts only `teacher_id`, `leave_type_id`, `start_date`, `end_date`, `reason`, and optional `substitute_teacher_id`. Tenant ID and actor ID are never accepted from the client. The teacher and optional substitute must be active and tenant-owned; the leave type must be tenant-owned. Foreign or inactive teacher references and foreign leave types return the same 404.
 - Dates must be canonical `YYYY-MM-DD`, end date cannot precede start date, and the required reason is limited to 2,000 characters. The response contains only request ID and workflow status, never the reason.
 - An `Idempotency-Key` is mandatory. The key is SHA-256 hashed at rest and scoped to institution. Its retry record expires after 24 hours and is pruned on the next leave submission for that institution; a global scheduled purge for dormant tenants remains an operations/retention task. A transaction creates the request, approval rows, audit event and idempotency record atomically. Same actor + same key + same payload within the retry window replays the original request; a different actor or payload returns 409.
-- Leave types configured with one or two approval levels create the corresponding pending approval rows. A leave type explicitly configured with `requires_approval=0` is created as approved with no approval rows; NULL or malformed legacy values fail closed and require approval. This does not expose approval/rejection APIs.
+- Leave types configured with one or two approval levels create the corresponding pending approval rows. A leave type explicitly configured with `requires_approval=0` is created as approved with no approval rows; NULL or malformed legacy values fail closed and require approval. Approval/rejection decisions are exposed by the separate ordered decision endpoint below.
 - Regression coverage includes cross-tenant teacher/type/substitute denial, five-role allow/deny behavior, idempotency replay/conflict, CSRF and missing-key rejection, date/reason validation, production entitlement denial/allowance, multi-level and no-approval configuration, and response privacy.
 
 
@@ -100,7 +100,7 @@ by tenant, entitlement and role-negative tests.
 - Leave submission checks for an existing pending or approved request for the same tenant-owned teacher whose inclusive date range overlaps the requested range.
 - The check runs after BEGIN IMMEDIATE and before insertion, so concurrent submissions against the same SQLite database are serialized; a conflicting request returns HTTP 409 with leave_dates_overlap.
 - Rejected requests do not reserve dates. Adjacent ranges are allowed (for example, an existing request ending on 12 December and a new request starting on 13 December).
-- This is a date-overlap guard, not a leave-balance or working-day calculation. Annual balance accounting, holidays/weekends, partial-day leave and approval/rejection endpoints remain outstanding.
+- This is a date-overlap guard, not a leave-balance or working-day calculation. Annual balance accounting, holidays/weekends, partial-day leave, cancellation and corrections remain outstanding.
 
 
 ## Tenant-scoped leave approval decisions
@@ -112,3 +112,16 @@ by tenant, entitlement and role-negative tests.
 - The decision row, parent request status and audit record commit in one transaction. Rejection is terminal; approval changes the request to `approved` only when every level has approved. Auto-approved leave types have no approval rows and cannot be decided again.
 - A retry by the same approver with the same decision and comments returns the original level and current aggregate status without adding another audit event. A changed decision/comment or a second actor attempting to reuse a completed level receives 409. Comments are stored with the approval record but are not returned in the API response or copied into the audit event.
 - This is an ordered approval workflow, not leave-balance accounting. Annual balances, working-day/holiday calculations, partial-day leave, cancellation and corrections remain outstanding.
+
+
+## Tenant-scoped attendance event writes
+
+- `POST /api/school/attendance/events` records one staff-assisted check-in or check-out for an active teacher in the authenticated institution. It is not teacher self-service because school identities are not yet linked to individual teacher records.
+- The exact payload is `teacher_id`, `policy_id`, `event_type` (`check_in` or `check_out`) and `time` (`HH:MM`). Client-supplied institution, actor, date and method fields are rejected. The server assigns the event day from its UTC clock; historical/backdated entry and institution-local calendar semantics are not implemented.
+- Only institution-scoped `manage_institution` or `manage_attendance_policy` permission can write. Institution Admin and HR/Attendance Officer are allowed by the default role matrix; Principal, Academic Coordinator and Examiner are denied unless separately granted the required permission. The `attendance` entitlement is enforced in production or explicit entitlement-enforcement mode.
+- The service revalidates the active school identity and permission inside `BEGIN IMMEDIATE`, verifies the active teacher belongs to the tenant, and verifies the selected policy belongs to that tenant, is currently effective, and matches any department/campus scope. Foreign or inactive references return the same 404.
+- Same-day event ordering is serialized in the transaction: check-out requires a preceding check-in; duplicate check-in/check-out and non-increasing HH:MM sequences are rejected. A subsequent check-in is allowed only after a check-out. Inconsistent legacy event history fails closed instead of being silently ignored.
+- An `Idempotency-Key` is mandatory, SHA-256 hashed at rest and scoped to the institution. Same actor + same key + same payload replays the original event; changed payload or another actor returns 409. The 24-hour retry record is pruned on the next event write for that institution; a global purge for dormant tenants remains an operations/retention task.
+- The attendance event, actor-attributed audit record and idempotency row commit atomically. The audit actor is the authenticated school user, not the teacher whose attendance is being recorded. The API never accepts a caller-selected method or stores the raw idempotency key.
+- Regression coverage includes cross-tenant teacher/policy denial, five-role authorization, CSRF and required-key checks, replay/conflict, check-in/check-out ordering, malformed inputs, production entitlement denial/allowance, corrupt legacy-history denial and concurrent duplicate check-in serialization.
+- Attendance corrections/approval, teacher self-service, historical entry, timezone-specific day boundaries, leave-balance accounting, exports/uploads and full legacy route authorization remain outstanding.
