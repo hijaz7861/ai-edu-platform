@@ -114,7 +114,7 @@ def record_school_attendance_event(
     actor_id = _identifier(actor_id, "active_tenant_identity_required")
     teacher_id = _identifier(teacher_id, "teacher_id_required")
     policy_id = _identifier(policy_id, "policy_id_required")
-    if event_type not in {"check_in", "check_out"}:
+    if not isinstance(event_type, str) or event_type not in {"check_in", "check_out"}:
         raise ValueError("unsupported_attendance_event_type")
     event_time = _parse_hhmm(timestamp_hhmm)
     key_hash = _idempotency_hash(idempotency_key)
@@ -216,7 +216,10 @@ def record_school_attendance_event(
         inconsistent = conn.execute(
             """SELECT 1 FROM attendance_events
                WHERE teacher_id = ? AND substr(COALESCE(created_at, ''), 1, 10) = ?
-                 AND (institution_id IS NULL OR institution_id <> ?)
+                 AND (
+                     institution_id IS NULL OR institution_id <> ?
+                     OR julianday(created_at) IS NULL
+                 )
                LIMIT 1""",
             (teacher_id, event_day, institution_id),
         ).fetchone()
@@ -229,8 +232,8 @@ def record_school_attendance_event(
                FROM attendance_events ae
                LEFT JOIN attendance_policies p ON p.id = ae.policy_id
                WHERE ae.teacher_id = ? AND ae.institution_id = ?
-                 AND substr(COALESCE(ae.created_at, ''), 1, 10) = ?
-               ORDER BY ae.created_at DESC, ae.id DESC LIMIT 1""",
+                 AND date(ae.created_at) = ?
+               ORDER BY julianday(ae.created_at) DESC, ae.id DESC LIMIT 1""",
             (teacher_id, institution_id, event_day),
         ).fetchone()
 

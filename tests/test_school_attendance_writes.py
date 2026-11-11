@@ -244,6 +244,37 @@ def test_attendance_write_rejects_client_tenant_actor_and_extra_fields(attendanc
     assert response.get_json() == {"error": "unsupported_payload"}
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "expected_error"),
+    [
+        ("event_type", ["check_in"], "unsupported_attendance_event_type"),
+        ("event_type", {"type": "check_in"}, "unsupported_attendance_event_type"),
+        ("time", ["09:00"], "invalid_attendance_time"),
+        ("time", "9:00", "invalid_attendance_time"),
+    ],
+)
+def test_attendance_write_rejects_malformed_event_values(
+    attendance_env, field, value, expected_error
+):
+    e = attendance_env
+    client = e["app"].app.test_client()
+    csrf = login(client, e["users"]["Institution Admin"])
+    payload = {
+        "teacher_id": e["teacher_a"],
+        "policy_id": e["policy_a"],
+        "event_type": "check_in",
+        "time": "09:00",
+    }
+    payload[field] = value
+    response = client.post(
+        "/api/school/attendance/events",
+        json=payload,
+        headers={"X-CSRF-Token": csrf, "Idempotency-Key": "attendance-invalid-0001"},
+    )
+    assert response.status_code == 400
+    assert response.get_json() == {"error": expected_error}
+
+
 def test_attendance_write_idempotency_replay_and_actor_payload_conflicts(attendance_env):
     e = attendance_env
     client = e["app"].app.test_client()
