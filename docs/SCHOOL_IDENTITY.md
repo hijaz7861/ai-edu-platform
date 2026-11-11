@@ -125,3 +125,11 @@ by tenant, entitlement and role-negative tests.
 - The attendance event, actor-attributed audit record and idempotency row commit atomically. The audit actor is the authenticated school user, not the teacher whose attendance is being recorded. The API never accepts a caller-selected method or stores the raw idempotency key.
 - Regression coverage includes cross-tenant teacher/policy denial, five-role authorization, CSRF and required-key checks, replay/conflict, check-in/check-out ordering, malformed inputs, production entitlement denial/allowance, corrupt legacy-history denial and concurrent duplicate check-in serialization.
 - Attendance corrections/approval, teacher self-service, historical entry, timezone-specific day boundaries, leave-balance accounting, exports/uploads and full legacy route authorization remain outstanding.
+
+
+## Idempotency-key retention maintenance
+
+- Leave-submission and attendance-event retry keys expire after 24 hours. Normal writes prune expired keys only for the tenant being used, so dormant tenants require a global maintenance pass.
+- `python tools/purge_expired_idempotency.py` performs a consistent dry-run by default and reports only row counts. It does not delete anything.
+- An operator must explicitly pass `--apply` to delete expired rows from `tenant_leave_request_keys` and `tenant_attendance_event_keys`. Both counts and deletions run under one `BEGIN IMMEDIATE` transaction; unexpired keys, leave requests, attendance events and audit records are preserved.
+- This utility is not scheduled or automatically executed by the application. Production operations must choose and document a retention cadence, backup/restore procedure and operator authorization before scheduling it.
