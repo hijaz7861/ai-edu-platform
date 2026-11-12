@@ -45,7 +45,7 @@ This is not yet a complete migration history for every table in the original bas
 
 - No production/staging worker process or scheduler is configured; the CLI now supports graceful SIGTERM/SIGINT shutdown between jobs, but no live supervisor integration or worker health/metrics endpoint is configured.
 - OCR/AI/connector/payment/notification handlers are not registered.
-- Long-running jobs need cancellation, graceful shutdown and per-side-effect authorization/idempotency.
+- Long-running jobs still need cooperative cancellation, per-side-effect authorization/idempotency and bounded I/O; graceful process shutdown between jobs is implemented, but no live supervisor integration exists.
 - Full versioned migration coverage for the entire base schema and future schema changes remains outstanding.
 - Off-site backup/restore, worker metrics/alerts and multi-node queue support remain outstanding.
 
