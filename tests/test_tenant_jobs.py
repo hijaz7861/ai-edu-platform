@@ -437,8 +437,8 @@ def test_worker_cli_sigterm_finishes_current_job_then_stops(monkeypatch, capsys)
 
     monkeypatch.setattr(worker_cli, "run_once", run_active_job)
     monkeypatch.setattr(
-        worker_cli.time, "sleep",
-        lambda _interval: pytest.fail("worker slept after shutdown was requested"),
+        worker_cli.threading.Event, "wait",
+        lambda _self, _interval: pytest.fail("worker waited after shutdown was requested"),
     )
 
     assert worker_cli.main() == 0
@@ -461,11 +461,29 @@ def test_worker_cli_sigterm_during_idle_poll_prevents_another_claim(monkeypatch,
     signal_handlers = {}
     calls = []
 
+    class FakeEvent:
+        def __init__(self):
+            self.flag = False
+
+        def set(self):
+            self.flag = True
+
+        def is_set(self):
+            return self.flag
+
+        def wait(self, _interval):
+            if not self.flag:
+                signal_handlers[worker_cli.signal.SIGTERM](
+                    worker_cli.signal.SIGTERM, None
+                )
+            return self.flag
+
     def fake_signal(signum, handler):
         previous = signal_handlers.get(signum, "default-handler")
         signal_handlers[signum] = handler
         return previous
 
+    monkeypatch.setattr(worker_cli.threading, "Event", FakeEvent)
     monkeypatch.setattr(sys, "argv", [
         "run_tenant_jobs.py", "--loop", "--worker-id", "worker-idle",
         "--poll-interval", "0.25",
@@ -479,13 +497,7 @@ def test_worker_cli_sigterm_during_idle_poll_prevents_another_claim(monkeypatch,
         calls.append("claimed")
         return None
 
-    def signal_during_sleep(_interval):
-        signal_handlers[worker_cli.signal.SIGTERM](
-            worker_cli.signal.SIGTERM, None
-        )
-
     monkeypatch.setattr(worker_cli, "run_once", idle_once)
-    monkeypatch.setattr(worker_cli.time, "sleep", signal_during_sleep)
 
     assert worker_cli.main() == 0
     assert calls == ["claimed"]
