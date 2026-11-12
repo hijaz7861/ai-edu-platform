@@ -21,13 +21,13 @@ Repeated requests to set the current status are no-ops and do not append another
 
 `grant_subscription()` and `change_subscription_status()` acquire a SQLite `BEGIN IMMEDIATE` transaction before reading lifecycle state. This serializes concurrent writers across independent connections, so two simultaneous grants cannot both pass the “already active” check and concurrent duplicate status events produce only one state-change event.
 
-These service methods own their transaction and require a clean connection. If the connection already has an open transaction, they raise `subscription_write_requires_clean_connection` rather than committing unrelated caller work. Each successful state mutation and its audit event commit together; failures roll back both.
+These service methods own their transaction and require a clean connection. If the connection already has an open transaction, they raise `subscription_write_requires_clean_connection` rather than committing unrelated caller work. Each successful state mutation and its audit event commit together; failures roll back both. SQLite triggers reject `UPDATE` and `DELETE` against `subscription_events`, protecting lifecycle history from application-level mutation. This is not tamper-proof against an operator who can alter the database schema or file.
 
-The current eligibility check still uses the subscription's status, plan state, start time, and end time. No schema migration or production database mutation is performed by this change.
+The current eligibility check still uses the subscription's status, plan state, start time, and end time. The append-only triggers are installed idempotently by the base-schema bootstrap; existing subscription rows are not rewritten. No production database was changed during this PR.
 
 ## Verification
 
-The licensing regression suite includes independent-connection concurrency tests for competing grants and repeated status changes, plus a test that verifies the clean-connection transaction contract.
+The licensing regression suite includes independent-connection concurrency tests for competing grants and repeated status changes, a clean-connection transaction test, and negative tests proving subscription lifecycle events cannot be updated or deleted.
 
 ## Remaining payment integration work
 
