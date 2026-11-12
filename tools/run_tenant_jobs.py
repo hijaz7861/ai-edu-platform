@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import time
 import uuid
 from db import DB_PATH, get_connection, init_db
@@ -19,22 +20,55 @@ def main():
     args = parser.parse_args()
     if not 0.25 <= args.poll_interval <= 60:
         parser.error("--poll-interval must be between 0.25 and 60 seconds")
-    init_db(args.database).close()
-    while True:
-        conn = get_connection(args.database)
+    stop_requested = False
+    previous_handlers = {}
+
+    def request_shutdown(_signum, _frame):
+        nonlocal stop_requested
+        stop_requested = True
+
+    # A supervisor's SIGTERM (or an operator's SIGINT) must stop the worker
+    # from claiming another job, not kill it between a claim and a commit.
+    # Signal registration is only supported from the main thread; this CLI
+    # always runs there, while imported/test use remains safe if not.
+    for signum in (signal.SIGINT, signal.SIGTERM):
         try:
-            result = run_once(conn, args.worker_id, HANDLERS)
-        finally:
-            conn.close()
-        if result is not None:
-            print(json.dumps(result, sort_keys=True))
-        elif not args.loop:
-            print(json.dumps({"status": "idle"}))
-            return 0
-        if not args.loop:
-            return 0
-        if result is None:
-            time.sleep(args.poll_interval)
+            previous_handlers[signum] = signal.signal(signum, request_shutdown)
+        except ValueError:
+            continue
+
+    try:
+        init_db(args.database).close()
+        while not stop_requested:
+            conn = get_connection(args.database)
+            try:
+                result = run_once(conn, args.worker_id, HANDLERS)
+            finally:
+                conn.close()
+            if result is not None:
+                print(json.dumps(result, sort_keys=True))
+
+            # run_once is synchronous: an in-flight handler is allowed to
+            # reach its normal completion/lease check before shutdown.
+            if stop_requested:
+                print(json.dumps({"status": "shutdown"}))
+                return 0
+            if not args.loop:
+                if result is None:
+                    print(json.dumps({"status": "idle"}))
+                return 0
+            if result is None:
+                try:
+                    time.sleep(args.poll_interval)
+                except InterruptedError:
+                    # The signal handler only sets a flag; the loop condition
+                    # performs the shutdown without starting another claim.
+                    pass
+        print(json.dumps({"status": "shutdown"}))
+        return 0
+    finally:
+        for signum, previous in previous_handlers.items():
+            signal.signal(signum, previous)
 
 
 if __name__ == "__main__":
