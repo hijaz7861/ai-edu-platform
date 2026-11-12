@@ -250,6 +250,66 @@ def test_concurrent_same_status_events_create_one_audit_event(conn):
     ).fetchone()["total"] == 1
 
 
+@pytest.mark.parametrize(
+    ("event_type", "operation"),
+    [
+        ("subscription_granted", "grant"),
+        ("subscription_status_changed", "status"),
+    ],
+)
+def test_subscription_mutation_rolls_back_when_audit_insert_fails(
+    conn, event_type, operation
+):
+    plan_id = create_plan(conn, code="audit-rollback-" + operation,
+                          name="Audit rollback")
+    subscription_id = None
+    if operation == "status":
+        subscription_id = grant_subscription(
+            conn, institution_id="school-1", plan_id=plan_id,
+            granted_by="admin", reason="Initial grant",
+        )
+
+    conn.execute(
+        f"""
+        CREATE TRIGGER fail_subscription_event_insert
+        BEFORE INSERT ON subscription_events
+        WHEN NEW.event_type = '{event_type}'
+        BEGIN
+            SELECT RAISE(ABORT, 'simulated_audit_failure');
+        END
+        """
+    )
+    conn.commit()
+
+    with pytest.raises(sqlite3.IntegrityError, match="simulated_audit_failure"):
+        if operation == "grant":
+            grant_subscription(
+                conn, institution_id="school-1", plan_id=plan_id,
+                granted_by="admin", reason="Grant whose audit must fail",
+            )
+        else:
+            change_subscription_status(
+                conn, subscription_id, status="suspended",
+                actor_id="admin", reason="Status change whose audit must fail",
+            )
+
+    if operation == "grant":
+        assert conn.execute(
+            "SELECT COUNT(*) FROM institution_subscriptions "
+            "WHERE institution_id = 'school-1'"
+        ).fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM subscription_events").fetchone()[0] == 0
+    else:
+        assert conn.execute(
+            "SELECT status FROM institution_subscriptions WHERE id = ?",
+            (subscription_id,),
+        ).fetchone()["status"] == "active"
+        assert conn.execute(
+            "SELECT COUNT(*) FROM subscription_events WHERE subscription_id = ?",
+            (subscription_id,),
+        ).fetchone()[0] == 1
+
+
 def test_subscription_events_are_append_only(conn):
     plan_id = create_plan(conn, code="immutable-events", name="Immutable events")
     sub_id = grant_subscription(
