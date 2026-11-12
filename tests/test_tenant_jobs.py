@@ -2,6 +2,7 @@
 import json
 import re
 import sqlite3
+import sys
 import uuid
 import pytest
 from db import get_connection, init_db
@@ -390,3 +391,103 @@ def test_registered_school_job_routes_match_exact_allowlist(job_env):
         for method in (set(rule.methods or ()) - {"HEAD", "OPTIONS"})
     }
     assert registered == SCHOOL_API_ROUTE_METHODS
+
+
+
+def test_worker_cli_sigterm_finishes_current_job_then_stops(monkeypatch, capsys):
+    from tools import run_tenant_jobs as worker_cli
+
+    class FakeConnection:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    connections = []
+
+    def make_connection(*_args, **_kwargs):
+        connection = FakeConnection()
+        connections.append(connection)
+        return connection
+
+    signal_handlers = {}
+
+    def fake_signal(signum, handler):
+        previous = signal_handlers.get(signum, "default-handler")
+        signal_handlers[signum] = handler
+        return previous
+
+    monkeypatch.setattr(sys, "argv", [
+        "run_tenant_jobs.py", "--loop", "--worker-id", "worker-test",
+        "--poll-interval", "0.25",
+    ])
+    monkeypatch.setattr(worker_cli.signal, "signal", fake_signal)
+    monkeypatch.setattr(worker_cli, "init_db", make_connection)
+    monkeypatch.setattr(worker_cli, "get_connection", make_connection)
+    monkeypatch.setattr(worker_cli, "HANDLERS", {})
+    calls = []
+
+    def run_active_job(conn, worker_id, handlers):
+        calls.append(worker_id)
+        signal_handlers[worker_cli.signal.SIGTERM](
+            worker_cli.signal.SIGTERM, None
+        )
+        return {"job_id": "job-1", "status": "succeeded"}
+
+    monkeypatch.setattr(worker_cli, "run_once", run_active_job)
+    monkeypatch.setattr(
+        worker_cli.time, "sleep",
+        lambda _interval: pytest.fail("worker slept after shutdown was requested"),
+    )
+
+    assert worker_cli.main() == 0
+    assert calls == ["worker-test"]
+    assert all(connection.closed for connection in connections)
+    output = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert output == [
+        {"job_id": "job-1", "status": "succeeded"},
+        {"status": "shutdown"},
+    ]
+
+
+def test_worker_cli_sigterm_during_idle_poll_prevents_another_claim(monkeypatch, capsys):
+    from tools import run_tenant_jobs as worker_cli
+
+    class FakeConnection:
+        def close(self):
+            self.closed = True
+
+    signal_handlers = {}
+    calls = []
+
+    def fake_signal(signum, handler):
+        previous = signal_handlers.get(signum, "default-handler")
+        signal_handlers[signum] = handler
+        return previous
+
+    monkeypatch.setattr(sys, "argv", [
+        "run_tenant_jobs.py", "--loop", "--worker-id", "worker-idle",
+        "--poll-interval", "0.25",
+    ])
+    monkeypatch.setattr(worker_cli.signal, "signal", fake_signal)
+    monkeypatch.setattr(worker_cli, "init_db", lambda *_args: FakeConnection())
+    monkeypatch.setattr(worker_cli, "get_connection", lambda *_args: FakeConnection())
+    monkeypatch.setattr(worker_cli, "HANDLERS", {})
+
+    def idle_once(_conn, _worker_id, _handlers):
+        calls.append("claimed")
+        return None
+
+    def signal_during_sleep(_interval):
+        signal_handlers[worker_cli.signal.SIGTERM](
+            worker_cli.signal.SIGTERM, None
+        )
+
+    monkeypatch.setattr(worker_cli, "run_once", idle_once)
+    monkeypatch.setattr(worker_cli.time, "sleep", signal_during_sleep)
+
+    assert worker_cli.main() == 0
+    assert calls == ["claimed"]
+    output = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert output == [{"status": "shutdown"}]
