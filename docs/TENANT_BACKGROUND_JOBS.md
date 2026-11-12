@@ -24,7 +24,9 @@ AI_EDU_DB=/path/to/platform.db python tools/run_tenant_jobs.py
 AI_EDU_DB=/path/to/platform.db python tools/run_tenant_jobs.py --loop --poll-interval 2
 ```
 
-The default performs one pass and exits. The loop option is intended for a dedicated worker process. No production worker process or scheduler is configured by this PR. SQLite is a single-host reference queue, not a multi-host distributed queue; multi-instance deployment requires a shared transactional database, connection pooling, migration work and lease heartbeat/cancellation design.
+The default performs one pass and exits. The loop option is intended for a dedicated worker process. The CLI handles `SIGTERM` and `SIGINT`: it stops claiming new jobs, lets the current synchronous `run_once` call return, closes its per-job database connection, and then exits. A supervisor must allow enough shutdown grace time for the current handler to finish. This is graceful between jobs, not cancellation of an in-flight handler; a blocked handler still needs bounded I/O timeouts and cooperative lease heartbeats. An abrupt kill can leave a running job leased until expiry.
+
+No production worker process or scheduler is configured by this PR. SQLite is a single-host reference queue, not a multi-host distributed queue; multi-instance deployment requires a shared transactional database, connection pooling, migration work and lease heartbeat/cancellation design.
 
 ## Additive SQLite migrations — partial implementation
 
@@ -41,7 +43,7 @@ This is not yet a complete migration history for every table in the original bas
 
 ## Remaining production gates
 
-- No production/staging worker process or scheduler is configured.
+- No production/staging worker process or scheduler is configured; the CLI now supports graceful SIGTERM/SIGINT shutdown between jobs, but no live supervisor integration or worker health/metrics endpoint is configured.
 - OCR/AI/connector/payment/notification handlers are not registered.
 - Long-running jobs need cancellation, graceful shutdown and per-side-effect authorization/idempotency.
 - Full versioned migration coverage for the entire base schema and future schema changes remains outstanding.
