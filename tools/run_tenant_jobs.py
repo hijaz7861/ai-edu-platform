@@ -4,7 +4,7 @@ import argparse
 import json
 import os
 import signal
-import time
+import threading
 import uuid
 from db import DB_PATH, get_connection, init_db
 from services.tenant_job_handlers import HANDLERS
@@ -20,12 +20,11 @@ def main():
     args = parser.parse_args()
     if not 0.25 <= args.poll_interval <= 60:
         parser.error("--poll-interval must be between 0.25 and 60 seconds")
-    stop_requested = False
+    stop_requested = threading.Event()
     previous_handlers = {}
 
     def request_shutdown(_signum, _frame):
-        nonlocal stop_requested
-        stop_requested = True
+        stop_requested.set()
 
     # A supervisor's SIGTERM (or an operator's SIGINT) must stop the worker
     # from claiming another job, not kill it between a claim and a commit.
@@ -39,7 +38,7 @@ def main():
 
     try:
         init_db(args.database).close()
-        while not stop_requested:
+        while not stop_requested.is_set():
             conn = get_connection(args.database)
             try:
                 result = run_once(conn, args.worker_id, HANDLERS)
@@ -50,7 +49,7 @@ def main():
 
             # run_once is synchronous: an in-flight handler is allowed to
             # reach its normal completion/lease check before shutdown.
-            if stop_requested:
+            if stop_requested.is_set():
                 print(json.dumps({"status": "shutdown"}))
                 return 0
             if not args.loop:
@@ -58,12 +57,9 @@ def main():
                     print(json.dumps({"status": "idle"}))
                 return 0
             if result is None:
-                try:
-                    time.sleep(args.poll_interval)
-                except InterruptedError:
-                    # The signal handler only sets a flag; the loop condition
-                    # performs the shutdown without starting another claim.
-                    pass
+                # Event.wait wakes immediately when SIGTERM/SIGINT sets the
+                # event, unlike time.sleep which may be restarted by Python.
+                stop_requested.wait(args.poll_interval)
         print(json.dumps({"status": "shutdown"}))
         return 0
     finally:
