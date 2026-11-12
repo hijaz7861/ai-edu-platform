@@ -250,6 +250,38 @@ def test_concurrent_same_status_events_create_one_audit_event(conn):
     ).fetchone()["total"] == 1
 
 
+def test_subscription_events_are_append_only(conn):
+    plan_id = create_plan(conn, code="immutable-events", name="Immutable events")
+    sub_id = grant_subscription(
+        conn, institution_id="school-1", plan_id=plan_id,
+        granted_by="admin", reason="Initial grant",
+    )
+    event = conn.execute(
+        "SELECT id FROM subscription_events WHERE subscription_id = ?",
+        (sub_id,),
+    ).fetchone()
+    assert event is not None
+
+    with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+        conn.execute(
+            "UPDATE subscription_events SET reason = 'tampered' WHERE id = ?",
+            (event["id"],),
+        )
+    conn.rollback()
+
+    with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+        conn.execute(
+            "DELETE FROM subscription_events WHERE id = ?",
+            (event["id"],),
+        )
+    conn.rollback()
+
+    assert conn.execute(
+        "SELECT COUNT(*) FROM subscription_events WHERE subscription_id = ?",
+        (sub_id,),
+    ).fetchone()[0] == 1
+
+
 def test_subscription_write_requires_clean_connection_transaction(conn):
     plan_id = create_plan(conn, code="clean-transaction", name="Clean transaction")
     conn.execute("BEGIN")
