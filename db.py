@@ -341,6 +341,16 @@ CREATE TABLE IF NOT EXISTS subscription_events (
 );
 CREATE INDEX IF NOT EXISTS idx_subscription_events_institution
     ON subscription_events(institution_id, created_at);
+CREATE TRIGGER IF NOT EXISTS subscription_events_no_update
+BEFORE UPDATE ON subscription_events
+BEGIN
+    SELECT RAISE(ABORT, 'subscription events are append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS subscription_events_no_delete
+BEFORE DELETE ON subscription_events
+BEGIN
+    SELECT RAISE(ABORT, 'subscription events are append-only');
+END;
 
 -- Persistent login throttling; key_hash is an HMAC, never a raw username/IP/password.
 CREATE TABLE IF NOT EXISTS login_rate_limits (
