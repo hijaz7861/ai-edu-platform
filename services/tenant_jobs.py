@@ -52,7 +52,7 @@ class TenantJobContext:
     _renew_lease: Callable[[], str] = field(repr=False, compare=False)
 
     def heartbeat(self) -> str:
-        """Renew this worker's active lease or raise LeaseLost if ownership expired."""
+        """Revalidate job authority and renew the live lease, or raise LeaseLost."""
         return self._renew_lease()
 
 
@@ -327,7 +327,7 @@ def _owned_job(conn, job_id, worker_id):
 
 
 def renew_job_lease(conn, job_id, worker_id, *, lease_seconds=120):
-    """Cooperatively extend a live lease without allowing an expired worker to revive it."""
+    """Revalidate the job actor and extend only its still-live worker lease."""
     if conn.in_transaction:
         raise ValueError("connection_has_open_transaction")
     if (isinstance(lease_seconds, bool) or not isinstance(lease_seconds, int)
@@ -336,10 +336,38 @@ def renew_job_lease(conn, job_id, worker_id, *, lease_seconds=120):
 
     conn.execute("BEGIN IMMEDIATE")
     try:
-        if _owned_job(conn, job_id, worker_id) is None:
+        job = _owned_job(conn, job_id, worker_id)
+        if job is None:
             raise LeaseLost("worker_lease_lost")
         now_dt = datetime.now(timezone.utc)
         now = now_dt.isoformat()
+        try:
+            # A long-running handler must not keep renewing work after the
+            # initiating school user's identity, tenant or permission is revoked.
+            _require_job_authority(
+                conn, job["institution_id"], job["actor_id"], job["job_type"]
+            )
+        except JobAuthorizationError:
+            changed = conn.execute(
+                """UPDATE tenant_jobs
+                   SET status='failed', last_error_code='authorization_revoked',
+                       locked_by=NULL, lease_expires_at=NULL,
+                       completed_at=?, updated_at=?
+                   WHERE id=? AND status='running' AND locked_by=?
+                     AND lease_expires_at > ?""",
+                (now, now, job_id, worker_id, now),
+            ).rowcount
+            if changed != 1:
+                raise LeaseLost("worker_lease_lost")
+            _event(
+                conn, job_id, job["institution_id"], job["actor_id"],
+                "job_failed",
+                {"error_code": "authorization_revoked",
+                 "attempt": job["attempt_count"]},
+            )
+            conn.commit()
+            raise LeaseLost("worker_authorization_revoked")
+
         lease_until = (now_dt + timedelta(seconds=lease_seconds)).isoformat()
         changed = conn.execute(
             """UPDATE tenant_jobs
@@ -353,7 +381,8 @@ def renew_job_lease(conn, job_id, worker_id, *, lease_seconds=120):
         conn.commit()
         return lease_until
     except Exception:
-        conn.rollback()
+        if conn.in_transaction:
+            conn.rollback()
         raise
 
 
