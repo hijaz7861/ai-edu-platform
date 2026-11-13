@@ -48,23 +48,27 @@ This is not yet a complete migration history for every table in the original bas
 
 - No production/staging worker process or scheduler is configured; the CLI now supports graceful SIGTERM/SIGINT shutdown between jobs, but no live supervisor integration or worker health/metrics endpoint is configured.
 - OCR/AI/connector/payment/notification handlers are not registered.
-- Long-running jobs still need cooperative cancellation, per-side-effect authorization/idempotency and bounded I/O; graceful process shutdown between jobs is implemented, but no live supervisor integration exists.
+- Long-running jobs still need cooperative cancellation, per-side-effect authorization/idempotency and bounded I/O. Heartbeats now revalidate the initiating actor's active tenant identity and permission, but they cannot interrupt a blocked handler or undo an external side effect; graceful shutdown between jobs is implemented, but no live supervisor integration exists.
 - Full versioned migration coverage for the entire base schema and future schema changes remains outstanding.
 - Off-site backup/restore, worker metrics/alerts and multi-node queue support remain outstanding.
 
 ## Cooperative lease heartbeat
 
 Long-running handlers must call `context.heartbeat()` between bounded stages and
-before/after any external side effect. The call extends the current worker's
-lease only while that worker still owns an unexpired lease. It raises
-`LeaseLost` if the lease expired, was reclaimed, or belongs to another worker;
-an expired worker cannot revive its old lease.
+before/after every external side effect. Each heartbeat revalidates the initiating
+school user's active identity, institution and exact job permission in the same
+transaction that extends the worker lease. If the user, institution or permission
+has been suspended, reassigned or revoked, the job is atomically marked failed
+with `authorization_revoked`, its lease is cleared, an append-only failure event
+is recorded, and the heartbeat raises `LeaseLost`. A worker cannot continue
+renewing a job under authority that no longer exists.
 
-Heartbeat is cooperative, not a background thread. A handler blocked inside a
-non-cooperative network or native call can still lose its lease. Such handlers
-must use bounded I/O timeouts, idempotency keys for each external side effect,
-and check/renew ownership before publishing results. A heartbeat cannot make
-an already-issued external side effect exactly-once.
+Heartbeat is cooperative, not a background thread. A handler that does not call
+it, or is blocked inside a non-cooperative network/native call, cannot be
+interrupted by this check. Such handlers must use bounded I/O timeouts,
+idempotency keys for each external side effect, and check/renew ownership before
+and after each bounded stage and before publishing results. A heartbeat cannot
+undo an already-issued external side effect or make it exactly-once.
 
 The worker still uses a local SQLite database in this repository. A shared
 multi-host queue, production scheduler, cancellation protocol, lease metrics,
