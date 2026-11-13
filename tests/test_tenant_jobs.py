@@ -246,6 +246,75 @@ def test_expired_worker_cannot_revive_lease_and_heartbeat_rejects_open_transacti
     conn.close()
 
 
+@pytest.mark.parametrize(
+    "revocation",
+    ["user_suspended", "institution_suspended", "role_downgraded"],
+)
+def test_worker_heartbeat_stops_job_after_actor_authority_revoked(job_env, revocation):
+    e = job_env
+    conn = init_db(e["path"])
+    job_id, _ = enqueue(
+        conn, e["a"], e["ua"], "worker-heartbeat-revoked-" + revocation,
+        ["classes"],
+    )
+
+    def revoke_then_heartbeat(_conn, context):
+        if revocation == "user_suspended":
+            conn.execute(
+                "UPDATE users SET status='suspended' WHERE id=?",
+                (e["ua"]["id"],),
+            )
+            conn.commit()
+        elif revocation == "institution_suspended":
+            conn.execute(
+                "UPDATE institutions SET status='suspended' WHERE id=?",
+                (e["a"],),
+            )
+            conn.commit()
+        else:
+            roles = core.seed_default_roles(conn)
+            conn.execute(
+                "DELETE FROM role_assignments WHERE user_id=?",
+                (e["ua"]["id"],),
+            )
+            conn.commit()
+            core.assign_role(
+                conn, e["ua"]["id"], roles["Academic Coordinator"],
+                "institution", e["a"], granted_by="platform-admin",
+            )
+        # This must atomically fail the job rather than extend its lease.
+        context.heartbeat()
+        return {"should_not_be_published": True}
+
+    result = run_once(
+        conn, "worker-heartbeat-revocation",
+        {"tenant_health_check": revoke_then_heartbeat},
+        lease_seconds=30,
+    )
+    assert result == {"job_id": job_id, "status": "lease_lost"}
+
+    row = conn.execute(
+        """SELECT status, last_error_code, locked_by, lease_expires_at, result_json
+           FROM tenant_jobs WHERE id=?""",
+        (job_id,),
+    ).fetchone()
+    assert row["status"] == "failed"
+    assert row["last_error_code"] == "authorization_revoked"
+    assert row["locked_by"] is None
+    assert row["lease_expires_at"] is None
+    assert row["result_json"] is None
+
+    events = conn.execute(
+        "SELECT event_type, detail_json FROM tenant_job_events WHERE job_id=?",
+        (job_id,),
+    ).fetchall()
+    failures = [event for event in events if event["event_type"] == "job_failed"]
+    assert len(failures) == 1
+    assert json.loads(failures[0]["detail_json"])["error_code"] == "authorization_revoked"
+    assert not any(event["event_type"] == "job_succeeded" for event in events)
+    conn.close()
+
+
 def test_school_route_permissions_match_institution_role_matrix(job_env):
     e = job_env
     admin_csrf = login(e["client_a"], e["ua"])
