@@ -101,8 +101,9 @@ def record_school_attendance_event(
     event_type,
     timestamp_hhmm,
     idempotency_key,
+    self_service=False,
 ):
-    """Record a staff-assisted attendance event with tenant and actor revalidation.
+    """Record a staff-assisted or self-service attendance event with tenant and actor revalidation.
 
     The server assigns the UTC event day. The caller supplies only the HH:MM
     time; tenant, actor, event method and date cannot be selected by the client.
@@ -138,7 +139,17 @@ def record_school_attendance_event(
         permissions = identity.institution_permissions(
             conn, user_id=actor_id, institution_id=institution_id
         )
-        if not ({"*", "manage_institution", "manage_attendance_policy"} & permissions):
+        if self_service:
+            linked_teacher = identity.linked_teacher_for_school_user(
+                conn, user_id=actor_id, institution_id=institution_id
+            )
+            if (
+                linked_teacher is None
+                or linked_teacher["id"] != teacher_id
+                or "self_attendance" not in permissions
+            ):
+                raise AttendanceAuthorizationError("teacher_identity_required")
+        elif not ({"*", "manage_institution", "manage_attendance_policy"} & permissions):
             raise AttendanceAuthorizationError("attendance_write_denied")
 
         enforcement_enabled = (
