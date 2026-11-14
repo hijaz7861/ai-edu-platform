@@ -188,6 +188,11 @@ _PROTECTED_API_PREFIXES = (
 # reviewed and added here only after tenant and role checks are implemented.
 _SCHOOL_API_ROUTE_METHODS = frozenset({
     ("school_me", "GET"),
+    ("school_teacher_me", "GET"),
+    ("school_teacher_attendance", "GET"),
+    ("school_teacher_create_attendance_event", "POST"),
+    ("school_teacher_leave_requests", "GET"),
+    ("school_teacher_create_leave_request", "POST"),
     ("school_classes", "GET"),
     ("school_create_class", "POST"),
     ("school_question_banks", "GET"),
@@ -217,6 +222,11 @@ _ROUTE_ACCESS_POLICIES = {
     "api_status": ("public", frozenset({"GET"})),
     "logout": ("authenticated", frozenset({"POST"})),
     "school_me": ("school_user", frozenset({"GET"})),
+    "school_teacher_me": ("school_user", frozenset({"GET"})),
+    "school_teacher_attendance": ("school_user", frozenset({"GET"})),
+    "school_teacher_create_attendance_event": ("school_user", frozenset({"POST"})),
+    "school_teacher_leave_requests": ("school_user", frozenset({"GET"})),
+    "school_teacher_create_leave_request": ("school_user", frozenset({"POST"})),
     "school_classes": ("school_user", frozenset({"GET"})),
     "school_create_class": ("school_user", frozenset({"POST"})),
     "school_question_banks": ("school_user", frozenset({"GET"})),
@@ -632,6 +642,172 @@ def school_exam_blueprints():
     return jsonify({"exam_blueprints": [dict(row) for row in rows]})
 
 
+@app.get("/api/school/teacher/me")
+def school_teacher_me():
+    """Return the minimal profile of the teacher linked to this school identity."""
+    teacher = identity.linked_teacher_for_school_user(
+        get_db(), user_id=session["user_id"], institution_id=session["institution_id"]
+    )
+    if teacher is None:
+        return err("teacher_identity_required", 403)
+    return jsonify({"teacher": teacher})
+
+
+@app.get("/api/school/teacher/attendance")
+def school_teacher_attendance():
+    """Return only the authenticated teacher's own attendance metadata."""
+    institution_id = session["institution_id"]
+    teacher = identity.linked_teacher_for_school_user(
+        get_db(), user_id=session["user_id"], institution_id=institution_id
+    )
+    permissions = identity.institution_permissions(
+        get_db(), user_id=session["user_id"], institution_id=institution_id
+    )
+    if teacher is None or "self_attendance" not in permissions:
+        return err("permission_denied", 403)
+    access_error = _require_feature_access(institution_id, "attendance")
+    if access_error:
+        return access_error
+    rows = get_db().execute(
+        """SELECT ae.id, ae.event_type, ae.timestamp, ae.status, ae.created_at
+           FROM attendance_events ae
+           JOIN teachers t ON t.id = ae.teacher_id
+           WHERE ae.institution_id = ? AND ae.teacher_id = ?
+             AND t.institution_id = ? AND t.status = 'active'
+           ORDER BY ae.created_at DESC, ae.id DESC LIMIT 100""",
+        (institution_id, teacher["id"], institution_id),
+    ).fetchall()
+    return jsonify({"attendance_events": [dict(row) for row in rows]})
+
+
+@app.post("/api/school/teacher/attendance/events")
+def school_teacher_create_attendance_event():
+    """Record attendance only for the teacher bound to the authenticated identity."""
+    body = request.get_json(silent=True)
+    if body is None:
+        if request.data:
+            return err("invalid_json", 400)
+        body = {}
+    if not isinstance(body, dict) or set(body) - {"policy_id", "event_type", "time"}:
+        return err("unsupported_payload", 400)
+    if not {"policy_id", "event_type", "time"}.issubset(body):
+        return err("required_fields_missing", 400)
+
+    institution_id = session["institution_id"]
+    teacher = identity.linked_teacher_for_school_user(
+        get_db(), user_id=session["user_id"], institution_id=institution_id
+    )
+    if teacher is None:
+        return err("teacher_identity_required", 403)
+    access_error = _require_feature_access(institution_id, "attendance")
+    if access_error:
+        return access_error
+    try:
+        result = record_school_attendance_event(
+            get_db(),
+            institution_id=institution_id,
+            actor_id=session["user_id"],
+            teacher_id=teacher["id"],
+            policy_id=body.get("policy_id"),
+            event_type=body.get("event_type"),
+            timestamp_hhmm=body.get("time"),
+            idempotency_key=request.headers.get("Idempotency-Key"),
+            self_service=True,
+        )
+    except AttendanceAuthorizationError:
+        return err("permission_denied", 403)
+    except AttendanceEntitlementError:
+        return err("subscription_required", 403)
+    except AttendanceResourceNotFound:
+        return err("attendance_resource_not_found", 404)
+    except AttendanceIdempotencyConflict:
+        return err("idempotency_key_conflict", 409)
+    except AttendanceSequenceConflict as exc:
+        return err(str(exc), 409)
+    except ValueError as exc:
+        return err(str(exc), 400)
+    return jsonify(result), 201 if result["created"] else 200
+
+
+@app.get("/api/school/teacher/leave-requests")
+def school_teacher_leave_requests():
+    """Return only the authenticated teacher's own leave-request metadata."""
+    institution_id = session["institution_id"]
+    teacher = identity.linked_teacher_for_school_user(
+        get_db(), user_id=session["user_id"], institution_id=institution_id
+    )
+    permissions = identity.institution_permissions(
+        get_db(), user_id=session["user_id"], institution_id=institution_id
+    )
+    if teacher is None or "self_leave_request" not in permissions:
+        return err("permission_denied", 403)
+    access_error = _require_feature_access(institution_id, "leave_management")
+    if access_error:
+        return access_error
+    rows = get_db().execute(
+        """SELECT lr.id, lt.name AS leave_type_name, lr.start_date,
+                  lr.end_date, lr.status, lr.created_at
+           FROM leave_requests lr
+           JOIN teachers t ON t.id = lr.teacher_id
+           JOIN leave_types lt ON lt.id = lr.leave_type_id
+           WHERE t.id = ? AND t.institution_id = ?
+             AND lt.institution_id = ?
+           ORDER BY lr.created_at DESC, lr.id DESC LIMIT 100""",
+        (teacher["id"], institution_id, institution_id),
+    ).fetchall()
+    return jsonify({"leave_requests": [dict(row) for row in rows]})
+
+
+@app.post("/api/school/teacher/leave-requests")
+def school_teacher_create_leave_request():
+    """Submit leave only for the teacher bound to the authenticated identity."""
+    body = request.get_json(silent=True)
+    if body is None:
+        if request.data:
+            return err("invalid_json", 400)
+        body = {}
+    allowed = {"leave_type_id", "start_date", "end_date", "reason"}
+    if not isinstance(body, dict) or set(body) - allowed:
+        return err("unsupported_payload", 400)
+    if not allowed.issubset(body):
+        return err("required_fields_missing", 400)
+
+    institution_id = session["institution_id"]
+    teacher = identity.linked_teacher_for_school_user(
+        get_db(), user_id=session["user_id"], institution_id=institution_id
+    )
+    if teacher is None:
+        return err("teacher_identity_required", 403)
+    access_error = _require_feature_access(institution_id, "leave_management")
+    if access_error:
+        return access_error
+    try:
+        leave_request_id, created, status = create_school_leave_request(
+            get_db(),
+            institution_id=institution_id,
+            actor_id=session["user_id"],
+            teacher_id=teacher["id"],
+            leave_type_id=body.get("leave_type_id"),
+            start_date=body.get("start_date"),
+            end_date=body.get("end_date"),
+            reason=body.get("reason"),
+            substitute_teacher_id=None,
+            idempotency_key=request.headers.get("Idempotency-Key"),
+            self_service=True,
+        )
+    except LeaveAuthorizationError:
+        return err("permission_denied", 403)
+    except LeaveResourceNotFound:
+        return err("leave_resource_not_found", 404)
+    except LeaveIdempotencyConflict:
+        return err("idempotency_key_conflict", 409)
+    except LeaveDateOverlapError:
+        return err("leave_dates_overlap", 409)
+    except ValueError as exc:
+        return err(str(exc), 400)
+    return jsonify({"id": leave_request_id, "status": status}), 201 if created else 200
+
+
 @app.get("/api/school/attendance")
 def school_attendance():
     """List bounded teacher-attendance metadata for the authenticated tenant."""
@@ -914,7 +1090,10 @@ def school_get_job(job_id):
 
 @app.post("/api/admin/school-users")
 def admin_create_school_user():
-    body = request.get_json(silent=True) or {}
+    body = request.get_json(silent=True)
+    allowed = {"email", "password", "institution_id", "role_name", "teacher_id"}
+    if not isinstance(body, dict) or set(body) - allowed:
+        return err("unsupported_payload", 400)
     try:
         created = identity.create_school_user(
             get_db(),
@@ -923,6 +1102,7 @@ def admin_create_school_user():
             institution_id=body.get("institution_id"),
             role_name=body.get("role_name"),
             granted_by=session.get("user", ""),
+            teacher_id=body.get("teacher_id"),
         )
     except ValueError as exc:
         return err(str(exc), 400)
