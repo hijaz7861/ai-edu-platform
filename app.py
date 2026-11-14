@@ -11,6 +11,7 @@ import hmac
 import hashlib
 import os
 import secrets
+from datetime import date as date_type
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify, g, abort, redirect, render_template, session, url_for
 from db import init_db, get_connection, DB_PATH
@@ -20,6 +21,17 @@ from services.login_throttle import clear_failures, is_locked, record_failure
 from services.api_rate_limit import allow_request
 from services.security_audit import append_security_event
 from services import identity
+from services.tenant_jobs import enqueue_job, get_tenant_job, JobAuthorizationError, IdempotencyConflict
+from services.tenant_leave import (
+    create_school_leave_request, decide_school_leave_approval,
+    LeaveAuthorizationError, LeaveIdempotencyConflict,
+    LeaveResourceNotFound, LeaveDateOverlapError, LeaveApprovalConflict,
+)
+from services.tenant_attendance import (
+    record_school_attendance_event, AttendanceAuthorizationError,
+    AttendanceEntitlementError, AttendanceResourceNotFound,
+    AttendanceIdempotencyConflict, AttendanceSequenceConflict,
+)
 from providers.base import get_default_registry
 from dashboard_api import dashboard_api
 
@@ -40,8 +52,14 @@ def add_security_headers(response):
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
     response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
-    if request.path == "/" or request.path.startswith(("/auth/", "/admin/", "/api/admin/")):
+    # Dynamic application responses can contain tenant, identity, assessment,
+    # billing, or provider data. Do not let browsers or intermediary caches
+    # retain them, including non-admin legacy routes and school APIs.
+    # Static assets remain cacheable so normal asset caching is unaffected.
+    if not request.path.startswith("/static/"):
         response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
     return response
 
 
@@ -170,9 +188,101 @@ _PROTECTED_API_PREFIXES = (
 # reviewed and added here only after tenant and role checks are implemented.
 _SCHOOL_API_ROUTE_METHODS = frozenset({
     ("school_me", "GET"),
+    ("school_teacher_me", "GET"),
+    ("school_teacher_attendance", "GET"),
+    ("school_teacher_create_attendance_event", "POST"),
+    ("school_teacher_leave_requests", "GET"),
+    ("school_teacher_create_leave_request", "POST"),
     ("school_classes", "GET"),
     ("school_create_class", "POST"),
+    ("school_question_banks", "GET"),
+    ("school_exam_blueprints", "GET"),
+    ("school_attendance", "GET"),
+    ("school_create_attendance_event", "POST"),
+    ("school_leave_requests", "GET"),
+    ("school_create_leave_request", "POST"),
+    ("school_decide_leave_approval", "POST"),
+    ("school_create_job", "POST"),
+    ("school_get_job", "GET"),
 })
+
+
+# Every registered route is classified by endpoint and HTTP method. Legacy
+# business APIs intentionally remain platform-admin-only until they receive
+# an institution-bound identity and a reviewed per-role data-access policy.
+# This is a fail-closed inventory: adding a route or method requires an
+# explicit classification here and a corresponding regression update.
+_ROUTE_ACCESS_POLICIES = {
+    "static": ("public", frozenset({"GET"})),
+    "home": ("public", frozenset({"GET"})),
+    "login": ("public", frozenset({"POST"})),
+    "school_login": ("public", frozenset({"POST"})),
+    "school_dashboard": ("public", frozenset({"GET"})),
+    "health": ("public", frozenset({"GET"})),
+    "api_status": ("public", frozenset({"GET"})),
+    "logout": ("authenticated", frozenset({"POST"})),
+    "school_me": ("school_user", frozenset({"GET"})),
+    "school_teacher_me": ("school_user", frozenset({"GET"})),
+    "school_teacher_attendance": ("school_user", frozenset({"GET"})),
+    "school_teacher_create_attendance_event": ("school_user", frozenset({"POST"})),
+    "school_teacher_leave_requests": ("school_user", frozenset({"GET"})),
+    "school_teacher_create_leave_request": ("school_user", frozenset({"POST"})),
+    "school_classes": ("school_user", frozenset({"GET"})),
+    "school_create_class": ("school_user", frozenset({"POST"})),
+    "school_question_banks": ("school_user", frozenset({"GET"})),
+    "school_exam_blueprints": ("school_user", frozenset({"GET"})),
+    "school_attendance": ("school_user", frozenset({"GET"})),
+    "school_create_attendance_event": ("school_user", frozenset({"POST"})),
+    "school_leave_requests": ("school_user", frozenset({"GET"})),
+    "school_create_leave_request": ("school_user", frozenset({"POST"})),
+    "school_decide_leave_approval": ("school_user", frozenset({"POST"})),
+    "school_create_job": ("school_user", frozenset({"POST"})),
+    "school_get_job": ("school_user", frozenset({"GET"})),
+    "admin_subscriptions_page": ("platform_admin", frozenset({"GET"})),
+    "connected_systems_admin_page": ("platform_admin", frozenset({"GET"})),
+    "admin_create_school_user": ("platform_admin", frozenset({"POST"})),
+    "create_institution": ("platform_admin", frozenset({"POST"})),
+    "create_class": ("platform_admin", frozenset({"POST"})),
+    "list_classes": ("platform_admin", frozenset({"GET"})),
+    "teacher_check_in": ("platform_admin", frozenset({"POST"})),
+    "teacher_check_out": ("platform_admin", frozenset({"POST"})),
+    "generate_question": ("platform_admin", frozenset({"POST"})),
+    "find_duplicates": ("platform_admin", frozenset({"POST"})),
+    "coverage_gaps": ("platform_admin", frozenset({"POST"})),
+    "generate_exam": ("platform_admin", frozenset({"POST"})),
+    "create_approval_gate": ("platform_admin", frozenset({"POST"})),
+    "decide_approval_gate": ("platform_admin", frozenset({"POST"})),
+    "select_provider": ("platform_admin", frozenset({"GET"})),
+    "list_connected_systems": ("platform_admin", frozenset({"GET"})),
+    "register_connected_system": ("platform_admin", frozenset({"POST"})),
+    "test_connected_system": ("platform_admin", frozenset({"POST"})),
+    "change_connected_system_status": ("platform_admin", frozenset({"POST"})),
+    "dashboard_api.dashboard_stats": ("platform_admin", frozenset({"GET"})),
+    "dashboard_api.list_institutions": ("platform_admin", frozenset({"GET"})),
+    "dashboard_api.list_classes": ("platform_admin", frozenset({"GET"})),
+    "dashboard_api.list_question_banks": ("platform_admin", frozenset({"GET"})),
+    "dashboard_api.list_exams": ("platform_admin", frozenset({"GET"})),
+    "dashboard_api.list_approval_gates": ("platform_admin", frozenset({"GET"})),
+    "dashboard_api.admin_list_plans": ("platform_admin", frozenset({"GET"})),
+    "dashboard_api.admin_create_plan": ("platform_admin", frozenset({"POST"})),
+    "dashboard_api.admin_list_subscriptions": ("platform_admin", frozenset({"GET"})),
+    "dashboard_api.admin_grant_subscription": ("platform_admin", frozenset({"POST"})),
+    "dashboard_api.admin_update_subscription_status": ("platform_admin", frozenset({"POST"})),
+}
+
+
+def _route_access_class(endpoint, method):
+    """Return a reviewed route class, or 'unclassified' for unknown methods/routes."""
+    policy = _ROUTE_ACCESS_POLICIES.get(endpoint)
+    if policy is None:
+        return "unclassified"
+    access_class, methods = policy
+    if method == "HEAD" and "GET" in methods:
+        return access_class
+    if method == "OPTIONS":
+        return access_class
+    return access_class if method in methods else "unclassified"
+
 
 
 @app.before_request
@@ -253,6 +363,29 @@ def enforce_api_security():
         if request.path in safe_session_routes or request.path.startswith("/static/"):
             return None
         return jsonify({"error": "platform_admin_required"}), 403
+
+    # Route inventory is independent of URL-prefix protection. A future
+    # endpoint or newly added method cannot inherit the development legacy
+    # bypass merely because it sits outside a known prefix. School APIs also
+    # require an actual school identity; a platform-admin cookie is not a
+    # substitute for an institution-bound user/session.
+    if request.endpoint is not None:
+        route_access = _route_access_class(request.endpoint, request.method)
+        if route_access == "unclassified":
+            return jsonify({"error": "route_access_policy_missing"}), 403
+        if route_access == "school_user" and session.get("role") != "school_user":
+            if not session.get("user"):
+                return jsonify({"error": "authentication_required"}), 401
+            return jsonify({"error": "school_identity_required"}), 403
+        if route_access == "authenticated" and not session.get("user"):
+            return jsonify({"error": "authentication_required"}), 401
+        if (
+            route_access == "platform_admin"
+            and not session.get("user")
+            and (must_protect or production_mode)
+            and not (legacy_mode and not is_admin_api and must_protect)
+        ):
+            return jsonify({"error": "authentication_required"}), 401
 
     if not must_protect:
         return None
@@ -452,15 +585,519 @@ def school_classes():
         get_db(), user_id=session["user_id"],
         institution_id=session["institution_id"],
     )
-    if not ({"*", "manage_institution", "view_all_reports"} & permissions):
+    # Academic Coordinators need read access to classes to perform their
+    # institution-scoped curriculum-management role.
+    if not ({"*", "manage_institution", "view_all_reports", "manage_curriculum"} & permissions):
         return err("permission_denied", 403)
     rows = core.scoped_query(get_db(), "classes", session["institution_id"])
     return jsonify({"classes": [dict(row) for row in rows]})
 
 
+
+@app.get("/api/school/question-banks")
+def school_question_banks():
+    """List only the authenticated institution's question-bank metadata."""
+    institution_id = session["institution_id"]
+    permissions = identity.institution_permissions(
+        get_db(), user_id=session["user_id"], institution_id=institution_id
+    )
+    if not ({"*", "manage_institution", "manage_curriculum", "verify_questions"} & permissions):
+        return err("permission_denied", 403)
+    access_error = _require_feature_access(institution_id, "question_bank_analysis")
+    if access_error:
+        return access_error
+
+    rows = get_db().execute(
+        """SELECT id, name, status
+           FROM question_banks
+           WHERE institution_id = ?
+           ORDER BY name, id
+           LIMIT 200""",
+        (institution_id,),
+    ).fetchall()
+    return jsonify({"question_banks": [dict(row) for row in rows]})
+
+
+@app.get("/api/school/exam-blueprints")
+def school_exam_blueprints():
+    """List only the authenticated institution's exam-blueprint metadata."""
+    institution_id = session["institution_id"]
+    permissions = identity.institution_permissions(
+        get_db(), user_id=session["user_id"], institution_id=institution_id
+    )
+    if not ({"*", "manage_institution", "manage_curriculum", "publish_exam"} & permissions):
+        return err("permission_denied", 403)
+    access_error = _require_feature_access(institution_id, "exam_generation")
+    if access_error:
+        return access_error
+
+    rows = get_db().execute(
+        """SELECT id, total_marks, duration_minutes, language, status, created_at
+           FROM exam_blueprints
+           WHERE institution_id = ?
+           ORDER BY created_at DESC, id
+           LIMIT 200""",
+        (institution_id,),
+    ).fetchall()
+    return jsonify({"exam_blueprints": [dict(row) for row in rows]})
+
+
+@app.get("/api/school/teacher/me")
+def school_teacher_me():
+    """Return the minimal profile of the teacher linked to this school identity."""
+    teacher = identity.linked_teacher_for_school_user(
+        get_db(), user_id=session["user_id"], institution_id=session["institution_id"]
+    )
+    if teacher is None:
+        return err("teacher_identity_required", 403)
+    return jsonify({"teacher": teacher})
+
+
+@app.get("/api/school/teacher/attendance")
+def school_teacher_attendance():
+    """Return only the authenticated teacher's own attendance metadata."""
+    if set(request.args.keys()) - {"institution_id"}:
+        return err("unsupported_query_parameter", 400)
+    institution_id = session["institution_id"]
+    teacher = identity.linked_teacher_for_school_user(
+        get_db(), user_id=session["user_id"], institution_id=institution_id
+    )
+    permissions = identity.institution_permissions(
+        get_db(), user_id=session["user_id"], institution_id=institution_id
+    )
+    if teacher is None or "self_attendance" not in permissions:
+        return err("permission_denied", 403)
+    access_error = _require_feature_access(institution_id, "attendance")
+    if access_error:
+        return access_error
+    rows = get_db().execute(
+        """SELECT ae.id, ae.event_type, ae.timestamp, ae.status, ae.created_at
+           FROM attendance_events ae
+           JOIN teachers t ON t.id = ae.teacher_id
+           WHERE ae.institution_id = ? AND ae.teacher_id = ?
+             AND t.institution_id = ? AND t.status = 'active'
+           ORDER BY ae.created_at DESC, ae.id DESC LIMIT 100""",
+        (institution_id, teacher["id"], institution_id),
+    ).fetchall()
+    return jsonify({"attendance_events": [dict(row) for row in rows]})
+
+
+@app.post("/api/school/teacher/attendance/events")
+def school_teacher_create_attendance_event():
+    """Record attendance only for the teacher bound to the authenticated identity."""
+    body = request.get_json(silent=True)
+    if body is None:
+        if request.data:
+            return err("invalid_json", 400)
+        body = {}
+    if not isinstance(body, dict) or set(body) - {"policy_id", "event_type"}:
+        return err("unsupported_payload", 400)
+    if not {"policy_id", "event_type"}.issubset(body):
+        return err("required_fields_missing", 400)
+
+    institution_id = session["institution_id"]
+    teacher = identity.linked_teacher_for_school_user(
+        get_db(), user_id=session["user_id"], institution_id=institution_id
+    )
+    if teacher is None:
+        return err("teacher_identity_required", 403)
+    access_error = _require_feature_access(institution_id, "attendance")
+    if access_error:
+        return access_error
+    try:
+        result = record_school_attendance_event(
+            get_db(),
+            institution_id=institution_id,
+            actor_id=session["user_id"],
+            teacher_id=teacher["id"],
+            policy_id=body.get("policy_id"),
+            event_type=body.get("event_type"),
+            timestamp_hhmm=None,
+            idempotency_key=request.headers.get("Idempotency-Key"),
+            self_service=True,
+        )
+    except AttendanceAuthorizationError:
+        return err("permission_denied", 403)
+    except AttendanceEntitlementError:
+        return err("subscription_required", 403)
+    except AttendanceResourceNotFound:
+        return err("attendance_resource_not_found", 404)
+    except AttendanceIdempotencyConflict:
+        return err("idempotency_key_conflict", 409)
+    except AttendanceSequenceConflict as exc:
+        return err(str(exc), 409)
+    except ValueError as exc:
+        return err(str(exc), 400)
+    return jsonify(result), 201 if result["created"] else 200
+
+
+@app.get("/api/school/teacher/leave-requests")
+def school_teacher_leave_requests():
+    """Return only the authenticated teacher's own leave-request metadata."""
+    if set(request.args.keys()) - {"institution_id"}:
+        return err("unsupported_query_parameter", 400)
+    institution_id = session["institution_id"]
+    teacher = identity.linked_teacher_for_school_user(
+        get_db(), user_id=session["user_id"], institution_id=institution_id
+    )
+    permissions = identity.institution_permissions(
+        get_db(), user_id=session["user_id"], institution_id=institution_id
+    )
+    if teacher is None or "self_leave_request" not in permissions:
+        return err("permission_denied", 403)
+    access_error = _require_feature_access(institution_id, "leave_management")
+    if access_error:
+        return access_error
+    rows = get_db().execute(
+        """SELECT lr.id, lt.name AS leave_type_name, lr.start_date,
+                  lr.end_date, lr.status, lr.created_at
+           FROM leave_requests lr
+           JOIN teachers t ON t.id = lr.teacher_id
+           JOIN leave_types lt ON lt.id = lr.leave_type_id
+           WHERE t.id = ? AND t.institution_id = ?
+             AND lt.institution_id = ?
+           ORDER BY lr.created_at DESC, lr.id DESC LIMIT 100""",
+        (teacher["id"], institution_id, institution_id),
+    ).fetchall()
+    return jsonify({"leave_requests": [dict(row) for row in rows]})
+
+
+@app.post("/api/school/teacher/leave-requests")
+def school_teacher_create_leave_request():
+    """Submit leave only for the teacher bound to the authenticated identity."""
+    body = request.get_json(silent=True)
+    if body is None:
+        if request.data:
+            return err("invalid_json", 400)
+        body = {}
+    allowed = {"leave_type_id", "start_date", "end_date", "reason"}
+    if not isinstance(body, dict) or set(body) - allowed:
+        return err("unsupported_payload", 400)
+    if not allowed.issubset(body):
+        return err("required_fields_missing", 400)
+
+    institution_id = session["institution_id"]
+    teacher = identity.linked_teacher_for_school_user(
+        get_db(), user_id=session["user_id"], institution_id=institution_id
+    )
+    if teacher is None:
+        return err("teacher_identity_required", 403)
+    access_error = _require_feature_access(institution_id, "leave_management")
+    if access_error:
+        return access_error
+    try:
+        leave_request_id, created, status = create_school_leave_request(
+            get_db(),
+            institution_id=institution_id,
+            actor_id=session["user_id"],
+            teacher_id=teacher["id"],
+            leave_type_id=body.get("leave_type_id"),
+            start_date=body.get("start_date"),
+            end_date=body.get("end_date"),
+            reason=body.get("reason"),
+            substitute_teacher_id=None,
+            idempotency_key=request.headers.get("Idempotency-Key"),
+            self_service=True,
+        )
+    except LeaveAuthorizationError:
+        return err("permission_denied", 403)
+    except LeaveResourceNotFound:
+        return err("leave_resource_not_found", 404)
+    except LeaveIdempotencyConflict:
+        return err("idempotency_key_conflict", 409)
+    except LeaveDateOverlapError:
+        return err("leave_dates_overlap", 409)
+    except ValueError as exc:
+        return err(str(exc), 400)
+    return jsonify({"id": leave_request_id, "status": status}), 201 if created else 200
+
+
+@app.get("/api/school/attendance")
+def school_attendance():
+    """List bounded teacher-attendance metadata for the authenticated tenant."""
+    institution_id = session["institution_id"]
+    permissions = identity.institution_permissions(
+        get_db(), user_id=session["user_id"], institution_id=institution_id
+    )
+    if not ({"*", "manage_institution", "view_all_reports", "manage_attendance_policy"} & permissions):
+        return err("permission_denied", 403)
+
+    access_error = _require_feature_access(institution_id, "attendance")
+    if access_error:
+        return access_error
+
+    # Tenant selection is never accepted from the client. The legacy
+    # institution_id selector is ignored for compatibility; other filters are
+    # explicit and validated so callers cannot smuggle SQL fragments/options.
+    unsupported = set(request.args.keys()) - {"date", "institution_id"}
+    if unsupported:
+        return err("unsupported_query_parameter", 400)
+    date_values = request.args.getlist("date")
+    if len(date_values) > 1:
+        return err("date_must_be_unique", 400)
+
+    date_filter = None
+    if date_values:
+        try:
+            parsed_date = date_type.fromisoformat(date_values[0])
+        except (TypeError, ValueError):
+            return err("invalid_date", 400)
+        if parsed_date.isoformat() != date_values[0]:
+            return err("invalid_date", 400)
+        date_filter = parsed_date.isoformat()
+
+    sql = """
+        SELECT ae.id, ae.teacher_id, ae.event_type, ae.timestamp,
+               ae.method, ae.status, ae.created_at
+        FROM attendance_events ae
+        JOIN teachers t ON t.id = ae.teacher_id
+        WHERE ae.institution_id = ? AND t.institution_id = ?
+    """
+    params = [institution_id, institution_id]
+    if date_filter is not None:
+        sql += " AND substr(ae.created_at, 1, 10) = ?"
+        params.append(date_filter)
+    sql += " ORDER BY ae.created_at DESC, ae.id DESC LIMIT 200"
+
+    rows = get_db().execute(sql, params).fetchall()
+    return jsonify({"attendance_events": [dict(row) for row in rows]})
+
+
+@app.post("/api/school/attendance/events")
+def school_create_attendance_event():
+    """Record a staff-assisted check-in or check-out for this tenant."""
+    body = request.get_json(silent=True)
+    if body is None:
+        if request.data:
+            return err("invalid_json", 400)
+        body = {}
+    if not isinstance(body, dict) or set(body) - {"teacher_id", "policy_id", "event_type", "time"}:
+        return err("unsupported_payload", 400)
+    if not {"teacher_id", "policy_id", "event_type", "time"}.issubset(body):
+        return err("required_fields_missing", 400)
+
+    institution_id = session["institution_id"]
+    access_error = _require_feature_access(institution_id, "attendance")
+    if access_error:
+        return access_error
+
+    try:
+        result = record_school_attendance_event(
+            get_db(),
+            institution_id=institution_id,
+            actor_id=session["user_id"],
+            teacher_id=body.get("teacher_id"),
+            policy_id=body.get("policy_id"),
+            event_type=body.get("event_type"),
+            timestamp_hhmm=body.get("time"),
+            idempotency_key=request.headers.get("Idempotency-Key"),
+        )
+    except AttendanceAuthorizationError:
+        return err("permission_denied", 403)
+    except AttendanceEntitlementError:
+        return err("subscription_required", 403)
+    except AttendanceResourceNotFound:
+        return err("attendance_resource_not_found", 404)
+    except AttendanceIdempotencyConflict:
+        return err("idempotency_key_conflict", 409)
+    except AttendanceSequenceConflict as exc:
+        return err(str(exc), 409)
+    except ValueError as exc:
+        return err(str(exc), 400)
+
+    return jsonify(result), 201 if result["created"] else 200
+
+
+@app.get("/api/school/leave-requests")
+def school_leave_requests():
+    """List bounded leave-request metadata after checking both tenant relationships."""
+    institution_id = session["institution_id"]
+    permissions = identity.institution_permissions(
+        get_db(), user_id=session["user_id"], institution_id=institution_id
+    )
+    if not ({"*", "manage_institution", "approve_leave", "view_all_reports"} & permissions):
+        return err("permission_denied", 403)
+
+    access_error = _require_feature_access(institution_id, "leave_management")
+    if access_error:
+        return access_error
+
+    unsupported = set(request.args.keys()) - {"status", "institution_id"}
+    if unsupported:
+        return err("unsupported_query_parameter", 400)
+    status_values = request.args.getlist("status")
+    if len(status_values) > 1:
+        return err("status_must_be_unique", 400)
+    status_filter = None
+    if status_values:
+        status_filter = status_values[0]
+        if status_filter not in {"pending", "approved", "rejected"}:
+            return err("invalid_status", 400)
+
+    # A leave request has no direct institution_id column. Require both its
+    # teacher and leave type to belong to the authenticated institution so
+    # inconsistent legacy rows cannot bridge tenants.
+    sql = """
+        SELECT lr.id, lr.teacher_id, lt.name AS leave_type_name,
+               lr.start_date, lr.end_date, lr.status, lr.created_at
+        FROM leave_requests lr
+        JOIN teachers t ON t.id = lr.teacher_id
+        JOIN leave_types lt ON lt.id = lr.leave_type_id
+        WHERE t.institution_id = ? AND lt.institution_id = ?
+    """
+    params = [institution_id, institution_id]
+    if status_filter is not None:
+        sql += " AND lr.status = ?"
+        params.append(status_filter)
+    sql += " ORDER BY lr.created_at DESC, lr.id DESC LIMIT 200"
+
+    rows = get_db().execute(sql, params).fetchall()
+    return jsonify({"leave_requests": [dict(row) for row in rows]})
+
+
+@app.post("/api/school/leave-requests")
+def school_create_leave_request():
+    """Create an idempotent, tenant-bound leave request for an active teacher."""
+    body = request.get_json(silent=True)
+    if body is None:
+        if request.data:
+            return err("invalid_json", 400)
+        body = {}
+    allowed = {
+        "teacher_id", "leave_type_id", "start_date", "end_date",
+        "reason", "substitute_teacher_id",
+    }
+    if not isinstance(body, dict) or set(body) - allowed:
+        return err("unsupported_payload", 400)
+    required = {"teacher_id", "leave_type_id", "start_date", "end_date", "reason"}
+    if not required.issubset(body):
+        return err("required_fields_missing", 400)
+
+    institution_id = session["institution_id"]
+    access_error = _require_feature_access(institution_id, "leave_management")
+    if access_error:
+        return access_error
+
+    try:
+        leave_request_id, created, status = create_school_leave_request(
+            get_db(),
+            institution_id=institution_id,
+            actor_id=session["user_id"],
+            teacher_id=body.get("teacher_id"),
+            leave_type_id=body.get("leave_type_id"),
+            start_date=body.get("start_date"),
+            end_date=body.get("end_date"),
+            reason=body.get("reason"),
+            substitute_teacher_id=body.get("substitute_teacher_id"),
+            idempotency_key=request.headers.get("Idempotency-Key"),
+        )
+    except LeaveAuthorizationError:
+        return err("permission_denied", 403)
+    except LeaveResourceNotFound:
+        return err("leave_resource_not_found", 404)
+    except LeaveIdempotencyConflict:
+        return err("idempotency_key_conflict", 409)
+    except LeaveDateOverlapError:
+        return err("leave_dates_overlap", 409)
+    except ValueError as exc:
+        return err(str(exc), 400)
+
+    return jsonify({"id": leave_request_id, "status": status}), 201 if created else 200
+
+
+@app.post("/api/school/leave-requests/<request_id>/decision")
+def school_decide_leave_approval(request_id):
+    """Record the next ordered leave approval/rejection for this tenant."""
+    body = request.get_json(silent=True)
+    if body is None:
+        if request.data:
+            return err("invalid_json", 400)
+        body = {}
+    if not isinstance(body, dict) or set(body) - {"decision", "comments"}:
+        return err("unsupported_payload", 400)
+    if "decision" not in body:
+        return err("required_fields_missing", 400)
+
+    institution_id = session["institution_id"]
+    access_error = _require_feature_access(institution_id, "leave_management")
+    if access_error:
+        return access_error
+
+    try:
+        result = decide_school_leave_approval(
+            get_db(),
+            institution_id=institution_id,
+            actor_id=session["user_id"],
+            leave_request_id=request_id,
+            decision=body.get("decision"),
+            comments=body.get("comments"),
+        )
+    except LeaveAuthorizationError:
+        return err("permission_denied", 403)
+    except LeaveResourceNotFound:
+        return err("leave_resource_not_found", 404)
+    except LeaveApprovalConflict:
+        return err("leave_approval_conflict", 409)
+    except ValueError as exc:
+        return err(str(exc), 400)
+
+    return jsonify(result)
+
+
+@app.post("/api/school/jobs")
+def school_create_job():
+    """Queue a tenant health check using only authenticated session identity."""
+    body = request.get_json(silent=True)
+    if body is None:
+        if request.data:
+            return err("invalid_json", 400)
+        body = {}
+    if not isinstance(body, dict) or set(body) - {"resources"}:
+        return err("unsupported_job_payload", 400)
+    try:
+        job_id, created = enqueue_job(
+            get_db(),
+            institution_id=session.get("institution_id"),
+            actor_id=session.get("user_id"),
+            job_type="tenant_health_check",
+            payload=body,
+            idempotency_key=request.headers.get("Idempotency-Key"),
+        )
+    except JobAuthorizationError:
+        return err("permission_denied", 403)
+    except IdempotencyConflict:
+        return err("idempotency_key_conflict", 409)
+    except ValueError as exc:
+        return err(str(exc), 400)
+    job = get_tenant_job(
+        get_db(), job_id=job_id, institution_id=session["institution_id"]
+    )
+    return jsonify({"id": job_id, "status": job["status"]}), 202 if created else 200
+
+
+@app.get("/api/school/jobs/<job_id>")
+def school_get_job(job_id):
+    """Return only a job belonging to the authenticated institution."""
+    permissions = identity.institution_permissions(
+        get_db(), user_id=session["user_id"],
+        institution_id=session["institution_id"],
+    )
+    if not ({"*", "manage_institution", "view_all_reports"} & permissions):
+        return err("permission_denied", 403)
+    job = get_tenant_job(
+        get_db(), job_id=job_id, institution_id=session["institution_id"]
+    )
+    if job is None:
+        return err("job_not_found", 404)
+    return jsonify(job)
+
+
 @app.post("/api/admin/school-users")
 def admin_create_school_user():
-    body = request.get_json(silent=True) or {}
+    body = request.get_json(silent=True)
+    allowed = {"email", "password", "institution_id", "role_name", "teacher_id"}
+    if not isinstance(body, dict) or set(body) - allowed:
+        return err("unsupported_payload", 400)
     try:
         created = identity.create_school_user(
             get_db(),
@@ -469,6 +1106,7 @@ def admin_create_school_user():
             institution_id=body.get("institution_id"),
             role_name=body.get("role_name"),
             granted_by=session.get("user", ""),
+            teacher_id=body.get("teacher_id"),
         )
     except ValueError as exc:
         return err(str(exc), 400)

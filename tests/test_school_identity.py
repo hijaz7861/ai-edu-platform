@@ -5,7 +5,7 @@ import uuid
 import pytest
 
 from db import init_db
-from services import core, identity
+from services import core, identity, attendance
 
 
 @pytest.fixture
@@ -189,7 +189,16 @@ def test_platform_scope_role_does_not_grant_school_api_permissions(school_app):
 
     client = school_app["client"]
     _login(client, school_app["user"])
-    response = client.get("/api/school/classes")
+    with client.session_transaction() as session:
+        csrf_token = session["csrf_token"]
+    # Academic Coordinator's institution-scoped manage_curriculum permission
+    # may list classes, but a platform-scoped wildcard must not grant the
+    # separate manage_institution permission needed to create them.
+    response = client.post(
+        "/api/school/classes",
+        json={"name": "Platform wildcard must not create classes"},
+        headers={"X-CSRF-Token": csrf_token},
+    )
     assert response.status_code == 403
     assert response.get_json()["error"] == "permission_denied"
 
@@ -377,3 +386,259 @@ def test_active_school_session_is_revoked_after_identity_or_scope_change(school_
     with client.session_transaction() as session:
         assert "user" not in session
         assert "institution_id" not in session
+
+
+def _seed_school_academic_read_rows(school_app):
+    conn = init_db(school_app["db_path"])
+    conn.executemany(
+        "INSERT INTO question_banks (id, institution_id, name, status) VALUES (?, ?, ?, 'active')",
+        [
+            ("bank-tenant-a", school_app["institution_a"], "Tenant A bank"),
+            ("bank-tenant-b", school_app["institution_b"], "Tenant B bank"),
+        ],
+    )
+    conn.executemany(
+        """INSERT INTO exam_blueprints
+           (id, institution_id, total_marks, duration_minutes, language, status)
+           VALUES (?, ?, ?, ?, ?, 'draft')""",
+        [
+            ("blueprint-tenant-a", school_app["institution_a"], 50, 60, "en"),
+            ("blueprint-tenant-b", school_app["institution_b"], 80, 90, "ur"),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_school_academic_reads_are_tenant_scoped_and_ignore_client_tenant_selector(school_app):
+    _seed_school_academic_read_rows(school_app)
+    client = school_app["client"]
+    _login(client, school_app["user"])
+    foreign_tenant = school_app["institution_b"]
+
+    banks = client.get(
+        "/api/school/question-banks",
+        query_string={"institution_id": foreign_tenant},
+    )
+    assert banks.status_code == 200
+    bank_rows = banks.get_json()["question_banks"]
+    assert [row["id"] for row in bank_rows] == ["bank-tenant-a"]
+    assert set(bank_rows[0]) == {"id", "name", "status"}
+
+    blueprints = client.get(
+        "/api/school/exam-blueprints",
+        query_string={"institution_id": foreign_tenant},
+    )
+    assert blueprints.status_code == 200
+    blueprint_rows = blueprints.get_json()["exam_blueprints"]
+    assert [row["id"] for row in blueprint_rows] == ["blueprint-tenant-a"]
+    assert set(blueprint_rows[0]) == {
+        "id", "total_marks", "duration_minutes", "language", "status", "created_at",
+    }
+
+
+def test_school_academic_reads_enforce_least_privilege_role_matrix(school_app):
+    _seed_school_academic_read_rows(school_app)
+    conn = init_db(school_app["db_path"])
+    roles = core.seed_default_roles(conn)
+    suffix = uuid.uuid4().hex[:10]
+    cases = [
+        ("Institution Admin", school_app["user"], True, True),
+        ("Principal", None, False, True),
+        ("Academic Coordinator", None, True, True),
+        ("Examiner", None, True, True),
+        ("HR/Attendance Officer", None, False, False),
+    ]
+    users = []
+    for index, (role_name, existing_user, can_read_banks, can_read_blueprints) in enumerate(cases):
+        user = existing_user or identity.create_school_user(
+            conn,
+            email=f"academic-read-{index}-{suffix}@school.example",
+            password="correct horse battery staple",
+            institution_id=school_app["institution_a"],
+            role_name=role_name,
+            granted_by="platform-admin",
+        )
+        if role_name == "HR/Attendance Officer":
+            # A platform wildcard must never leak into institution permissions.
+            core.assign_role(
+                conn, user["id"], roles["Super Admin"], "platform", "platform",
+                granted_by="platform-admin",
+            )
+        users.append((role_name, user, can_read_banks, can_read_blueprints))
+    conn.close()
+
+    for role_name, user, can_read_banks, can_read_blueprints in users:
+        client = school_app["app"].app.test_client()
+        _login(client, user)
+        banks = client.get("/api/school/question-banks")
+        blueprints = client.get("/api/school/exam-blueprints")
+        assert banks.status_code == (200 if can_read_banks else 403), role_name
+        assert blueprints.status_code == (200 if can_read_blueprints else 403), role_name
+        if not can_read_banks:
+            assert banks.get_json()["error"] == "permission_denied"
+        if not can_read_blueprints:
+            assert blueprints.get_json()["error"] == "permission_denied"
+
+
+@pytest.mark.parametrize(
+    ("path", "feature"),
+    [
+        ("/api/school/question-banks", "question_bank_analysis"),
+        ("/api/school/exam-blueprints", "exam_generation"),
+    ],
+)
+def test_school_academic_reads_fail_closed_without_active_entitlement(
+    school_app, monkeypatch, path, feature
+):
+    _seed_school_academic_read_rows(school_app)
+    client = school_app["client"]
+    _login(client, school_app["user"])
+    monkeypatch.setenv("APP_ENV", "production")
+
+    response = client.get(path)
+    assert response.status_code == 403
+    assert response.get_json() == {"error": "subscription_required"}
+
+
+
+def _seed_school_attendance_events(school_app):
+    conn = init_db(school_app["db_path"])
+    suffix = uuid.uuid4().hex[:10]
+
+    user_a = core.create_user(conn, school_app["institution_a"], f"teacher-a-{suffix}@school.example")
+    teacher_a = core.create_teacher(conn, user_a, school_app["institution_a"], "TA-" + suffix)
+    policy_a = attendance.create_policy(
+        conn, school_app["institution_a"], "Tenant A policy",
+        working_hours_start="08:00", working_hours_end="16:00",
+    )
+    event_a, _ = attendance.check_in(
+        conn, teacher_a, school_app["institution_a"], policy_a, "08:05"
+    )
+
+    user_b = core.create_user(conn, school_app["institution_b"], f"teacher-b-{suffix}@school.example")
+    teacher_b = core.create_teacher(conn, user_b, school_app["institution_b"], "TB-" + suffix)
+    policy_b = attendance.create_policy(
+        conn, school_app["institution_b"], "Tenant B policy",
+        working_hours_start="08:00", working_hours_end="16:00",
+    )
+    event_b, _ = attendance.check_in(
+        conn, teacher_b, school_app["institution_b"], policy_b, "08:45"
+    )
+
+    created_at = conn.execute(
+        "SELECT created_at FROM attendance_events WHERE id = ?", (event_a,)
+    ).fetchone()["created_at"]
+    conn.close()
+    return event_a, event_b, created_at[:10]
+
+
+def test_school_attendance_is_tenant_scoped_and_ignores_client_tenant_selector(school_app):
+    event_a, event_b, event_date = _seed_school_attendance_events(school_app)
+    client = school_app["client"]
+    _login(client, school_app["user"])
+
+    response = client.get(
+        "/api/school/attendance",
+        query_string={
+            "institution_id": school_app["institution_b"],
+            "date": event_date,
+        },
+    )
+    assert response.status_code == 200
+    rows = response.get_json()["attendance_events"]
+    assert [row["id"] for row in rows] == [event_a]
+    assert event_b not in {row["id"] for row in rows}
+    assert all(set(row) == {
+        "id", "teacher_id", "event_type", "timestamp", "method", "status", "created_at"
+    } for row in rows)
+
+
+def test_school_attendance_enforces_institution_role_matrix(school_app):
+    conn = init_db(school_app["db_path"])
+    suffix = uuid.uuid4().hex[:10]
+    cases = [
+        ("Institution Admin", school_app["user"], True),
+        ("Principal", None, True),
+        ("Academic Coordinator", None, False),
+        ("Examiner", None, False),
+        ("HR/Attendance Officer", None, True),
+    ]
+    users = []
+    for index, (role_name, existing_user, allowed) in enumerate(cases):
+        user = existing_user or identity.create_school_user(
+            conn,
+            email=f"attendance-role-{index}-{suffix}@school.example",
+            password="correct horse battery staple",
+            institution_id=school_app["institution_a"],
+            role_name=role_name,
+            granted_by="platform-admin",
+        )
+        users.append((role_name, user, allowed))
+    conn.close()
+
+    for role_name, user, allowed in users:
+        client = school_app["app"].app.test_client()
+        _login(client, user)
+        response = client.get("/api/school/attendance")
+        assert response.status_code == (200 if allowed else 403), role_name
+        if not allowed:
+            assert response.get_json() == {"error": "permission_denied"}
+
+
+def test_school_attendance_fails_closed_without_active_entitlement(school_app, monkeypatch):
+    client = school_app["client"]
+    _login(client, school_app["user"])
+    monkeypatch.setenv("APP_ENV", "production")
+
+    response = client.get("/api/school/attendance")
+    assert response.status_code == 403
+    assert response.get_json() == {"error": "subscription_required"}
+
+
+@pytest.mark.parametrize("invalid_date", ["not-a-date", "2026-02-30", "2026-2-3"])
+def test_school_attendance_rejects_invalid_date_filters(school_app, invalid_date):
+    _login(school_app["client"], school_app["user"])
+    response = school_app["client"].get(
+        "/api/school/attendance", query_string={"date": invalid_date}
+    )
+    assert response.status_code == 400
+    assert response.get_json() == {"error": "invalid_date"}
+
+
+def test_school_attendance_rejects_duplicate_date_and_unknown_filters(school_app):
+    _login(school_app["client"], school_app["user"])
+    duplicate = school_app["client"].get(
+        "/api/school/attendance",
+        query_string=[("date", "2026-11-07"), ("date", "2026-11-08")],
+    )
+    assert duplicate.status_code == 400
+    assert duplicate.get_json() == {"error": "date_must_be_unique"}
+
+    unsupported = school_app["client"].get(
+        "/api/school/attendance", query_string={"limit": "999"}
+    )
+    assert unsupported.status_code == 400
+    assert unsupported.get_json() == {"error": "unsupported_query_parameter"}
+
+
+def test_school_attendance_excludes_event_with_foreign_tenant_teacher(school_app):
+    event_a, event_b, _ = _seed_school_attendance_events(school_app)
+    conn = init_db(school_app["db_path"])
+    # Simulate a legacy/corrupt row whose event tenant says A while its teacher
+    # still belongs to B. The endpoint must require both ownership relationships.
+    conn.execute(
+        "UPDATE attendance_events SET institution_id = ? WHERE id = ?",
+        (school_app["institution_a"], event_b),
+    )
+    conn.commit()
+    conn.close()
+
+    client = school_app["client"]
+    _login(client, school_app["user"])
+    response = client.get("/api/school/attendance")
+
+    assert response.status_code == 200
+    rows = response.get_json()["attendance_events"]
+    assert [row["id"] for row in rows] == [event_a]
+    assert event_b not in {row["id"] for row in rows}
