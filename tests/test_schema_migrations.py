@@ -23,6 +23,7 @@ def test_migrations_are_versioned_and_idempotent(tmp_path):
         (3, "tenant_leave_request_idempotency"),
         (4, "tenant_leave_key_retention_window"),
         (5, "tenant_attendance_event_idempotency"),
+        (6, "tenant_teacher_identity_links"),
     ]
     assert _versions(first) == expected
     assert "password_hash" in {
@@ -143,6 +144,7 @@ def test_concurrent_database_initialization_applies_each_migration_once(tmp_path
         (3, "tenant_leave_request_idempotency"),
         (4, "tenant_leave_key_retention_window"),
         (5, "tenant_attendance_event_idempotency"),
+        (6, "tenant_teacher_identity_links"),
     ]
     assert all(versions == expected and has_jobs for versions, has_jobs in results)
 
@@ -156,7 +158,7 @@ def test_tenant_leave_request_key_migration_has_expiry_column(tmp_path):
         ).fetchall()
     }
     assert {"idempotency_key_hash", "request_hash", "actor_id", "expires_at"} <= columns
-    assert _versions(conn)[-1] == (5, "tenant_attendance_event_idempotency")
+    assert _versions(conn)[-1] == (6, "tenant_teacher_identity_links")
     conn.close()
 
 
@@ -212,5 +214,85 @@ def test_legacy_v3_leave_key_table_is_upgraded_for_expiry(tmp_path):
     }
     assert "tenant_leave_request_keys_no_update" not in triggers
     assert "tenant_leave_request_keys_no_delete" not in triggers
-    assert _versions(upgraded)[-1] == (5, "tenant_attendance_event_idempotency")
+    assert _versions(upgraded)[-1] == (6, "tenant_teacher_identity_links")
     upgraded.close()
+
+
+
+def test_teacher_identity_link_migration_enforces_tenant_scope_and_role(tmp_path):
+    conn = init_db(str(tmp_path / "teacher-identity-links.sqlite"))
+    role = conn.execute(
+        "SELECT id, scope_level, permissions FROM roles WHERE name='Teacher Portal'"
+    ).fetchone()
+    assert role is not None
+    assert role["scope_level"] == "institution"
+    assert {"self_attendance", "self_leave_request", "view_own_records"} <= set(
+        __import__("json").loads(role["permissions"])
+    )
+    assert _versions(conn)[-1] == (6, "tenant_teacher_identity_links")
+
+    conn.execute(
+        "INSERT INTO institutions(id, name, code, status) VALUES "
+        "('link-tenant-a', 'Link A', 'LINK-A', 'active'), "
+        "('link-tenant-b', 'Link B', 'LINK-B', 'active')"
+    )
+    conn.execute(
+        "INSERT INTO users(id, institution_id, email, status) "
+        "VALUES ('link-user-a', 'link-tenant-a', 'link-a@example.test', 'active')"
+    )
+    conn.execute(
+        "INSERT INTO teachers(id, user_id, institution_id, employee_code, status) "
+        "VALUES ('link-teacher-b', 'link-user-a', 'link-tenant-b', 'TB', 'active')"
+    )
+    conn.execute(
+        "INSERT INTO role_assignments(id, user_id, role_id, scope_type, scope_id) "
+        "VALUES ('link-role-a', 'link-user-a', ?, 'institution', 'link-tenant-a')",
+        (role["id"],),
+    )
+    import pytest
+    with pytest.raises(sqlite3.IntegrityError, match="teacher_identity_scope_mismatch"):
+        conn.execute(
+            "INSERT INTO teacher_identity_links(user_id, teacher_id, institution_id) "
+            "VALUES ('link-user-a', 'link-teacher-b', 'link-tenant-a')"
+        )
+    conn.rollback()
+    conn.close()
+
+
+def test_teacher_identity_link_prevents_later_tenant_reassignment(tmp_path):
+    conn = init_db(str(tmp_path / "teacher-identity-reassignment.sqlite"))
+    role = conn.execute(
+        "SELECT id FROM roles WHERE name='Teacher Portal' AND scope_level='institution'"
+    ).fetchone()
+    conn.execute(
+        "INSERT INTO institutions(id, name, code, status) VALUES "
+        "('link-tenant-a', 'Link A', 'LINK-A', 'active'), "
+        "('link-tenant-b', 'Link B', 'LINK-B', 'active')"
+    )
+    conn.execute(
+        "INSERT INTO users(id, institution_id, email, status) "
+        "VALUES ('link-user-a', 'link-tenant-a', 'link-a@example.test', 'active')"
+    )
+    conn.execute(
+        "INSERT INTO teachers(id, user_id, institution_id, employee_code, status) "
+        "VALUES ('link-teacher-a', 'link-user-a', 'link-tenant-a', 'TA', 'active')"
+    )
+    conn.execute(
+        "INSERT INTO role_assignments(id, user_id, role_id, scope_type, scope_id) "
+        "VALUES ('link-role-a', 'link-user-a', ?, 'institution', 'link-tenant-a')",
+        (role["id"],),
+    )
+    conn.execute(
+        "INSERT INTO teacher_identity_links(user_id, teacher_id, institution_id) "
+        "VALUES ('link-user-a', 'link-teacher-a', 'link-tenant-a')"
+    )
+    conn.commit()
+    import pytest
+    with pytest.raises(sqlite3.IntegrityError, match="teacher_identity_scope_mismatch"):
+        conn.execute("UPDATE users SET institution_id='link-tenant-b' WHERE id='link-user-a'")
+    with pytest.raises(sqlite3.IntegrityError, match="teacher_identity_scope_mismatch"):
+        conn.execute("UPDATE teachers SET institution_id='link-tenant-b' WHERE id='link-teacher-a'")
+    with pytest.raises(sqlite3.IntegrityError, match="audited revocation"):
+        conn.execute("DELETE FROM teacher_identity_links WHERE user_id='link-user-a'")
+    conn.rollback()
+    conn.close()
