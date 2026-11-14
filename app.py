@@ -656,6 +656,8 @@ def school_teacher_me():
 @app.get("/api/school/teacher/attendance")
 def school_teacher_attendance():
     """Return only the authenticated teacher's own attendance metadata."""
+    if set(request.args.keys()) - {"institution_id"}:
+        return err("unsupported_query_parameter", 400)
     institution_id = session["institution_id"]
     teacher = identity.linked_teacher_for_school_user(
         get_db(), user_id=session["user_id"], institution_id=institution_id
@@ -732,6 +734,8 @@ def school_teacher_create_attendance_event():
 @app.get("/api/school/teacher/leave-requests")
 def school_teacher_leave_requests():
     """Return only the authenticated teacher's own leave-request metadata."""
+    if set(request.args.keys()) - {"institution_id"}:
+        return err("unsupported_query_parameter", 400)
     institution_id = session["institution_id"]
     teacher = identity.linked_teacher_for_school_user(
         get_db(), user_id=session["user_id"], institution_id=institution_id
