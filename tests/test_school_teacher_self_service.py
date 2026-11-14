@@ -295,3 +295,44 @@ def test_teacher_portal_mutations_require_csrf_and_idempotency(teacher_env):
     )
     assert missing_csrf.status_code == 400
     assert missing_key.status_code == 400
+
+
+
+def test_teacher_identity_provisioning_rolls_back_when_audit_insert_fails(teacher_env):
+    e = teacher_env
+    conn = init_db(e["path"])
+    suffix = uuid.uuid4().hex[:8]
+    teacher_id = core.create_teacher(
+        conn, None, e["tenant_a"], "AUDIT-" + suffix
+    )
+    conn.execute(
+        """
+        CREATE TRIGGER fail_school_user_audit
+        BEFORE INSERT ON audit_log
+        WHEN NEW.action_type = 'school_user_created'
+        BEGIN
+            SELECT RAISE(ABORT, 'school_user_audit_unavailable');
+        END
+        """
+    )
+    conn.commit()
+    with pytest.raises(RuntimeError, match="school_user_audit_failed"):
+        identity.create_school_user(
+            conn, email=f"audit-failure-{suffix}@school.example",
+            password="correct horse battery staple", institution_id=e["tenant_a"],
+            role_name="Teacher Portal", teacher_id=teacher_id,
+            granted_by="platform-admin",
+        )
+    teacher = conn.execute(
+        "SELECT user_id FROM teachers WHERE id=?", (teacher_id,)
+    ).fetchone()
+    assert teacher["user_id"] is None
+    assert conn.execute(
+        "SELECT COUNT(*) FROM teacher_identity_links WHERE teacher_id=?",
+        (teacher_id,),
+    ).fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM users WHERE email=?",
+        (f"audit-failure-{suffix}@school.example",),
+    ).fetchone()[0] == 0
+    conn.close()
