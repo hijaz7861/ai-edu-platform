@@ -99,6 +99,24 @@ def create_school_user(conn, *, email, password, institution_id, role_name, gran
                    VALUES (?, ?, ?)""",
                 (user_id, teacher_id, institution_id),
             )
+        # Provisioning is security-relevant and must commit atomically with
+        # the user, role assignment, and optional teacher link.
+        conn.execute(
+            """INSERT INTO audit_log
+               (id, institution_id, actor_id, action_type, entity_type,
+                entity_id, after_state)
+               VALUES (?, ?, ?, 'school_user_created', 'users', ?, ?)""",
+            (
+                uuid.uuid4().hex,
+                institution_id,
+                str(granted_by or ""),
+                user_id,
+                json.dumps(
+                    {"role": role_name, "teacher_linked": role_name == "Teacher Portal"},
+                    sort_keys=True,
+                ),
+            ),
+        )
         conn.commit()
     except ValueError:
         conn.rollback()
@@ -107,6 +125,8 @@ def create_school_user(conn, *, email, password, institution_id, role_name, gran
         conn.rollback()
         if "teacher_identity_links" in str(exc) or "teacher_identity_scope" in str(exc):
             raise ValueError("teacher_identity_unavailable") from None
+        if "school_user_audit_unavailable" in str(exc):
+            raise RuntimeError("school_user_audit_failed") from None
         raise ValueError("email_already_exists") from None
     except Exception:
         conn.rollback()
