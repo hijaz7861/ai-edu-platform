@@ -65,8 +65,9 @@ def create_school_leave_request(
     reason,
     substitute_teacher_id=None,
     idempotency_key,
+    self_service=False,
 ):
-    """Create one leave request atomically; tenant and actor come from the session.
+    """Create one staff-assisted or self-service leave request atomically; tenant and actor come from the session.
 
     The caller must pass the institution and actor from the revalidated school
     session. This function revalidates both identity and institution-scoped
@@ -117,7 +118,17 @@ def create_school_leave_request(
         permissions = identity.institution_permissions(
             conn, user_id=actor_id, institution_id=institution_id
         )
-        if not ({"*", "manage_institution", "approve_leave", "manage_attendance_policy"} & permissions):
+        if self_service:
+            linked_teacher = identity.linked_teacher_for_school_user(
+                conn, user_id=actor_id, institution_id=institution_id
+            )
+            if (
+                linked_teacher is None
+                or linked_teacher["id"] != teacher_id
+                or "self_leave_request" not in permissions
+            ):
+                raise LeaveAuthorizationError("teacher_identity_required")
+        elif not ({"*", "manage_institution", "approve_leave", "manage_attendance_policy"} & permissions):
             raise LeaveAuthorizationError("leave_request_submission_denied")
 
         now_dt = datetime.now(timezone.utc)
