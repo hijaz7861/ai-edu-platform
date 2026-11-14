@@ -157,7 +157,9 @@ def authenticate_school_user(conn, *, email, password):
         """,
         (row["id"], row["institution_id"]),
     ).fetchall()
-    if len(assignment) != 1:
+    if not assignment:
+        return None
+    if any(item["name"] == "Teacher Portal" for item in assignment) and len(assignment) != 1:
         return None
     return {
         "id": row["id"],
