@@ -190,18 +190,56 @@ def authenticate_school_user(conn, *, email, password):
 
 
 def active_tenant_identity(conn, *, user_id, institution_id):
-    """Revalidate session tenant binding against persistent state on every request."""
+    """Revalidate tenant identity and prevent Teacher Portal role escalation."""
     if not user_id or not institution_id:
         return False
     row = conn.execute(
         """
         SELECT 1
-        FROM users u JOIN institutions i ON i.id = u.institution_id
-        JOIN role_assignments ra ON ra.user_id = u.id
-        JOIN roles r ON r.id = ra.role_id
+        FROM users u
+        JOIN institutions i ON i.id = u.institution_id
         WHERE u.id = ? AND u.institution_id = ? AND u.status = 'active'
-          AND i.status = 'active' AND ra.scope_type = 'institution'
-          AND ra.scope_id = u.institution_id AND r.scope_level = 'institution'
+          AND i.status = 'active'
+          AND EXISTS (
+              SELECT 1
+              FROM role_assignments ra
+              JOIN roles r ON r.id = ra.role_id
+              WHERE ra.user_id = u.id
+                AND ra.scope_type = 'institution'
+                AND ra.scope_id = u.institution_id
+                AND r.scope_level = 'institution'
+          )
+          AND (
+              NOT EXISTS (
+                  SELECT 1
+                  FROM role_assignments teacher_ra
+                  JOIN roles teacher_role ON teacher_role.id = teacher_ra.role_id
+                  WHERE teacher_ra.user_id = u.id
+                    AND teacher_ra.scope_type = 'institution'
+                    AND teacher_ra.scope_id = u.institution_id
+                    AND teacher_role.scope_level = 'institution'
+                    AND teacher_role.name = 'Teacher Portal'
+              )
+              OR (
+                  (SELECT COUNT(*)
+                   FROM role_assignments scoped_ra
+                   JOIN roles scoped_role ON scoped_role.id = scoped_ra.role_id
+                   WHERE scoped_ra.user_id = u.id
+                     AND scoped_ra.scope_type = 'institution'
+                     AND scoped_ra.scope_id = u.institution_id
+                     AND scoped_role.scope_level = 'institution') = 1
+                  AND EXISTS (
+                      SELECT 1
+                      FROM teacher_identity_links l
+                      JOIN teachers t ON t.id = l.teacher_id
+                      WHERE l.user_id = u.id
+                        AND l.institution_id = u.institution_id
+                        AND t.user_id = u.id
+                        AND t.institution_id = u.institution_id
+                        AND t.status = 'active'
+                  )
+              )
+          )
         LIMIT 1
         """,
         (user_id, institution_id),
