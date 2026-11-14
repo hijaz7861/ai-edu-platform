@@ -23,12 +23,12 @@ def teacher_env(tmp_path, monkeypatch):
     teacher_a = core.create_teacher(conn, None, tenant_a, "TA-" + suffix)
     teacher_b = core.create_teacher(conn, None, tenant_b, "TB-" + suffix)
     policy_a = attendance.create_policy(
-        conn, tenant_a, "Tenant A policy", "09:00", "17:00",
+        conn, tenant_a, "Tenant A policy", "00:00", "23:59",
         grace_period_minutes=10, late_threshold_minutes=15,
         early_departure_threshold_minutes=15,
     )
     policy_b = attendance.create_policy(
-        conn, tenant_b, "Tenant B policy", "08:00", "16:00",
+        conn, tenant_b, "Tenant B policy", "00:00", "23:59",
         grace_period_minutes=5, late_threshold_minutes=10,
         early_departure_threshold_minutes=10,
     )
@@ -142,7 +142,7 @@ def test_teacher_portal_profile_and_attendance_are_bound_to_linked_teacher(teach
     assert profile_teacher["employee_code"] == e["employee_code_a"]
     assert profile_teacher["department_id"] is None
 
-    payload = {"policy_id": e["policy_a"], "event_type": "check_in", "time": "09:00"}
+    payload = {"policy_id": e["policy_a"], "event_type": "check_in"}
     first = client.post(
         "/api/school/teacher/attendance/events", json=payload,
         headers=headers(csrf, "teacher-attendance-self-0001"),
@@ -175,6 +175,11 @@ def test_teacher_portal_profile_and_attendance_are_bound_to_linked_teacher(teach
         json={**payload, "teacher_id": e["teacher_b"]},
         headers=headers(csrf, "teacher-attendance-self-0003"),
     )
+    forged_time = client.post(
+        "/api/school/teacher/attendance/events",
+        json={**payload, "time": "09:00"},
+        headers=headers(csrf, "teacher-attendance-self-0004"),
+    )
     staff_write = client.post(
         "/api/school/attendance/events",
         json={
@@ -186,6 +191,7 @@ def test_teacher_portal_profile_and_attendance_are_bound_to_linked_teacher(teach
     staff_read = client.get("/api/school/attendance")
     assert foreign_policy.status_code == 404
     assert forged_teacher.status_code == 400
+    assert forged_time.status_code == 400
     assert staff_write.status_code == 403
     assert staff_read.status_code == 403
 
@@ -278,7 +284,7 @@ def test_teacher_portal_mutations_require_csrf_and_idempotency(teacher_env):
     e = teacher_env
     client = e["app"].app.test_client()
     csrf = login(client, e["user_a"])
-    payload = {"policy_id": e["policy_a"], "event_type": "check_in", "time": "09:00"}
+    payload = {"policy_id": e["policy_a"], "event_type": "check_in"}
     missing_csrf = client.post(
         "/api/school/teacher/attendance/events", json=payload,
         headers={"Idempotency-Key": "teacher-attendance-csrf-0001"},
