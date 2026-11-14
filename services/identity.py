@@ -13,7 +13,7 @@ _ALLOWED_INSTITUTION_ROLES = frozenset({
     "HR/Attendance Officer",
     "Teacher Portal",
 })
-_EMAIL_RE = re.compile(r"^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$")
+_EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 
 
 def create_school_user(conn, *, email, password, institution_id, role_name, granted_by, teacher_id=None):
