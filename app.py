@@ -690,9 +690,9 @@ def school_teacher_create_attendance_event():
         if request.data:
             return err("invalid_json", 400)
         body = {}
-    if not isinstance(body, dict) or set(body) - {"policy_id", "event_type", "time"}:
+    if not isinstance(body, dict) or set(body) - {"policy_id", "event_type"}:
         return err("unsupported_payload", 400)
-    if not {"policy_id", "event_type", "time"}.issubset(body):
+    if not {"policy_id", "event_type"}.issubset(body):
         return err("required_fields_missing", 400)
 
     institution_id = session["institution_id"]
@@ -712,7 +712,7 @@ def school_teacher_create_attendance_event():
             teacher_id=teacher["id"],
             policy_id=body.get("policy_id"),
             event_type=body.get("event_type"),
-            timestamp_hhmm=body.get("time"),
+            timestamp_hhmm=None,
             idempotency_key=request.headers.get("Idempotency-Key"),
             self_service=True,
         )
