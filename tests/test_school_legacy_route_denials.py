@@ -12,6 +12,11 @@ from flask import session
 # new /api/school/* endpoint without adding it here must fail the route audit.
 SCHOOL_API_ROUTE_METHODS = frozenset({
     ("school_me", "GET"),
+    ("school_teacher_me", "GET"),
+    ("school_teacher_attendance", "GET"),
+    ("school_teacher_create_attendance_event", "POST"),
+    ("school_teacher_leave_requests", "GET"),
+    ("school_teacher_create_leave_request", "POST"),
     ("school_classes", "GET"),
     ("school_create_class", "POST"),
     ("school_question_banks", "GET"),
