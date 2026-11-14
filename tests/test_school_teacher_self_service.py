@@ -253,7 +253,7 @@ def test_teacher_portal_leave_requests_are_self_only_and_cannot_be_approved(teac
 
 
 @pytest.mark.parametrize("revocation", ["teacher_suspended", "extra_institution_role"])
-def test_teacher_portal_denies_access_after_link_or_role_authority_changes(teacher_env, revocation):
+def test_teacher_portal_session_is_invalidated_after_link_or_role_authority_changes(teacher_env, revocation):
     e = teacher_env
     client = e["app"].app.test_client()
     login(client, e["user_a"])
@@ -276,8 +276,65 @@ def test_teacher_portal_denies_access_after_link_or_role_authority_changes(teach
     conn.commit()
     conn.close()
     response = client.get("/api/school/teacher/me")
-    assert response.status_code == 403
-    assert response.get_json()["error"] == "teacher_identity_required"
+    assert response.status_code == 401
+    assert response.get_json()["error"] == "school_identity_inactive"
+    with client.session_transaction() as session:
+        assert "user_id" not in session
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/api/school/attendance", "/api/school/leave-requests", "/api/school/classes"],
+)
+def test_teacher_portal_cannot_inherit_staff_permissions_after_role_escalation(teacher_env, path):
+    e = teacher_env
+    client = e["app"].app.test_client()
+    login(client, e["user_a"])
+    conn = init_db(e["path"])
+    role = conn.execute(
+        "SELECT id FROM roles WHERE name='HR/Attendance Officer'"
+    ).fetchone()
+    conn.execute(
+        "INSERT INTO role_assignments(id,user_id,role_id,scope_type,scope_id) "
+        "VALUES(?,?,?,?,?)",
+        ("staff-escalation-" + uuid.uuid4().hex, e["user_a"]["id"], role["id"],
+         "institution", e["tenant_a"]),
+    )
+    conn.commit()
+    conn.close()
+
+    response = client.get(path)
+    assert response.status_code == 401
+    assert response.get_json()["error"] == "school_identity_inactive"
+    with client.session_transaction() as session:
+        assert "user_id" not in session
+
+
+def test_regular_school_identity_can_retain_multiple_institution_roles(teacher_env):
+    e = teacher_env
+    conn = init_db(e["path"])
+    staff = identity.create_school_user(
+        conn,
+        email="multi-role-staff@example.test",
+        password="correct horse battery staple",
+        institution_id=e["tenant_a"],
+        role_name="Institution Admin",
+        granted_by="platform-admin",
+    )
+    role = conn.execute(
+        "SELECT id FROM roles WHERE name='HR/Attendance Officer'"
+    ).fetchone()
+    conn.execute(
+        "INSERT INTO role_assignments(id,user_id,role_id,scope_type,scope_id) "
+        "VALUES(?,?,?,?,?)",
+        ("staff-extra-role-" + uuid.uuid4().hex, staff["id"], role["id"],
+         "institution", e["tenant_a"]),
+    )
+    conn.commit()
+    assert identity.active_tenant_identity(
+        conn, user_id=staff["id"], institution_id=e["tenant_a"]
+    ) is True
+    conn.close()
 
 
 def test_teacher_portal_mutations_require_csrf_and_idempotency(teacher_env):
