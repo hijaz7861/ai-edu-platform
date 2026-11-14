@@ -117,14 +117,20 @@ def record_school_attendance_event(
     policy_id = _identifier(policy_id, "policy_id_required")
     if not isinstance(event_type, str) or event_type not in {"check_in", "check_out"}:
         raise ValueError("unsupported_attendance_event_type")
-    event_time = _parse_hhmm(timestamp_hhmm)
+    if self_service:
+        if timestamp_hhmm is not None:
+            raise ValueError("client_attendance_time_not_allowed")
+        event_time = None
+    else:
+        event_time = _parse_hhmm(timestamp_hhmm)
     key_hash = _idempotency_hash(idempotency_key)
     canonical = {
         "teacher_id": teacher_id,
         "policy_id": policy_id,
         "event_type": event_type,
-        "time": timestamp_hhmm,
     }
+    if not self_service:
+        canonical["time"] = timestamp_hhmm
     request_hash = hashlib.sha256(
         json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
@@ -162,6 +168,11 @@ def record_school_attendance_event(
         now_dt = datetime.now(timezone.utc)
         created_at = now_dt.isoformat()
         event_day = now_dt.date().isoformat()
+        if self_service:
+            # The teacher cannot backdate or choose an attendance time. The
+            # same idempotency payload replays before this timestamp is used.
+            timestamp_hhmm = now_dt.strftime("%H:%M")
+            event_time = _parse_hhmm(timestamp_hhmm)
         expires_at = (now_dt + timedelta(hours=24)).isoformat()
 
         # Idempotency rows are retry metadata and are pruned only after expiry.
