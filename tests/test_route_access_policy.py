@@ -34,6 +34,7 @@ def test_every_registered_route_method_has_an_explicit_access_policy():
         ("school_teacher_create_attendance_event", "POST", "school_user"),
         ("school_teacher_leave_requests", "GET", "school_user"),
         ("school_teacher_create_leave_request", "POST", "school_user"),
+        ("school_revoke_teacher_identity", "POST", "school_user"),
         ("api_status", "GET", "public"),
         ("logout", "POST", "authenticated"),
         ("future_blueprint.export_all", "GET", "unclassified"),
