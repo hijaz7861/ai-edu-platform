@@ -1,5 +1,6 @@
 """Tenant-bound teacher identity provisioning and self-service regressions."""
 import re
+import sqlite3
 import uuid
 
 import pytest
@@ -44,6 +45,21 @@ def teacher_env(tmp_path, monkeypatch):
         password="correct horse battery staple", institution_id=tenant_b,
         role_name="Teacher Portal", teacher_id=teacher_b, granted_by="platform-admin",
     )
+    admin_a = identity.create_school_user(
+        conn, email=f"admin-a-{suffix}@school.example",
+        password="correct horse battery staple", institution_id=tenant_a,
+        role_name="Institution Admin", granted_by="platform-admin",
+    )
+    principal_a = identity.create_school_user(
+        conn, email=f"principal-a-{suffix}@school.example",
+        password="correct horse battery staple", institution_id=tenant_a,
+        role_name="Principal", granted_by="platform-admin",
+    )
+    hr_a = identity.create_school_user(
+        conn, email=f"hr-a-{suffix}@school.example",
+        password="correct horse battery staple", institution_id=tenant_a,
+        role_name="HR/Attendance Officer", granted_by="platform-admin",
+    )
     conn.close()
 
     import app as app_module
@@ -57,6 +73,7 @@ def teacher_env(tmp_path, monkeypatch):
         "policy_a": policy_a, "policy_b": policy_b,
         "leave_type_a": leave_type_a, "leave_type_b": leave_type_b,
         "user_a": user_a, "user_b": user_b,
+        "admin_a": admin_a, "principal_a": principal_a, "hr_a": hr_a,
     }
 
 
@@ -393,3 +410,249 @@ def test_teacher_identity_provisioning_rolls_back_when_audit_insert_fails(teache
         (f"audit-failure-{suffix}@school.example",),
     ).fetchone()[0] == 0
     conn.close()
+
+def test_teacher_identity_revocation_is_audited_idempotent_and_allows_reassignment(teacher_env):
+    e = teacher_env
+    client = e["app"].app.test_client()
+    csrf = login(client, e["admin_a"])
+    path = f"/api/school/teachers/{e['teacher_a']}/identity/revoke"
+    payload = {"reason_code": "employment_ended"}
+    request_headers = headers(csrf, "teacher-revoke-idempotency-0001")
+
+    revoked = client.post(path, json=payload, headers=request_headers)
+    assert revoked.status_code == 200
+    result = revoked.get_json()
+    assert result["revoked"] is True
+    assert result["created"] is True
+    assert result["teacher_id"] == e["teacher_a"]
+    assert result["user_id"] == e["user_a"]["id"]
+
+    conn = init_db(e["path"])
+    link_count = conn.execute(
+        "SELECT COUNT(*) FROM teacher_identity_links WHERE teacher_id=?",
+        (e["teacher_a"],),
+    ).fetchone()[0]
+    teacher = conn.execute(
+        "SELECT user_id FROM teachers WHERE id=?", (e["teacher_a"],)
+    ).fetchone()
+    old_user = conn.execute(
+        "SELECT status FROM users WHERE id=?", (e["user_a"]["id"],)
+    ).fetchone()
+    event = conn.execute(
+        "SELECT * FROM teacher_identity_events WHERE id=?",
+        (result["revocation_id"],),
+    ).fetchone()
+    audit = conn.execute(
+        """SELECT action_type, actor_id, entity_type, entity_id
+           FROM audit_log WHERE entity_id=?""",
+        (result["revocation_id"],),
+    ).fetchone()
+    assert link_count == 0
+    assert teacher["user_id"] is None
+    assert old_user["status"] == "suspended"
+    assert event["event_type"] == "revoked"
+    assert event["reason_code"] == "employment_ended"
+    assert event["actor_id"] == e["admin_a"]["id"]
+    assert audit["action_type"] == "teacher_identity_link_revoked"
+    assert audit["entity_type"] == "teacher_identity_events"
+    assert audit["entity_id"] == result["revocation_id"]
+
+    replay = client.post(path, json=payload, headers=request_headers)
+    assert replay.status_code == 200
+    assert replay.get_json()["created"] is False
+    assert replay.get_json()["revocation_id"] == result["revocation_id"]
+    conflict = client.post(
+        path,
+        json={"reason_code": "account_compromised"},
+        headers=request_headers,
+    )
+    assert conflict.status_code == 409
+
+    replacement_user = identity.create_school_user(
+        conn,
+        email="replacement-teacher@example.test",
+        password="correct horse battery staple",
+        institution_id=e["tenant_a"],
+        role_name="Teacher Portal",
+        teacher_id=e["teacher_a"],
+        granted_by=e["admin_a"]["id"],
+    )
+    assert identity.linked_teacher_for_school_user(
+        conn, user_id=replacement_user["id"], institution_id=e["tenant_a"]
+    )["id"] == e["teacher_a"]
+
+    # Replaying the old idempotency key must not revoke a newly-created link.
+    replay_after_reassignment = client.post(path, json=payload, headers=request_headers)
+    assert replay_after_reassignment.status_code == 200
+    assert replay_after_reassignment.get_json()["created"] is False
+    current_teacher = conn.execute(
+        "SELECT user_id FROM teachers WHERE id=?", (e["teacher_a"],)
+    ).fetchone()
+    assert current_teacher["user_id"] == replacement_user["id"]
+
+    with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+        conn.execute(
+            "UPDATE teacher_identity_events SET reason_code='identity_correction' WHERE id=?",
+            (result["revocation_id"],),
+        )
+    conn.rollback()
+    with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+        conn.execute(
+            "DELETE FROM teacher_identity_events WHERE id=?",
+            (result["revocation_id"],),
+        )
+    conn.rollback()
+    conn.close()
+
+
+@pytest.mark.parametrize("actor_key", ["principal_a", "hr_a", "user_a"])
+def test_teacher_identity_revocation_requires_manage_users_permission(teacher_env, actor_key):
+    e = teacher_env
+    client = e["app"].app.test_client()
+    csrf = login(client, e[actor_key])
+    response = client.post(
+        f"/api/school/teachers/{e['teacher_a']}/identity/revoke",
+        json={"reason_code": "identity_correction"},
+        headers=headers(csrf, "teacher-revoke-denied-" + actor_key),
+    )
+    assert response.status_code == 403
+    conn = init_db(e["path"])
+    assert conn.execute(
+        "SELECT COUNT(*) FROM teacher_identity_links WHERE teacher_id=?",
+        (e["teacher_a"],),
+    ).fetchone()[0] == 1
+    assert conn.execute(
+        "SELECT COUNT(*) FROM teacher_identity_events"
+    ).fetchone()[0] == 0
+    conn.close()
+
+
+def test_teacher_identity_revocation_cannot_cross_tenant(teacher_env):
+    e = teacher_env
+    client = e["app"].app.test_client()
+    csrf = login(client, e["admin_a"])
+    response = client.post(
+        f"/api/school/teachers/{e['teacher_b']}/identity/revoke",
+        json={"reason_code": "teacher_reassignment"},
+        headers=headers(csrf, "teacher-revoke-cross-tenant-0001"),
+    )
+    assert response.status_code == 404
+    conn = init_db(e["path"])
+    assert conn.execute(
+        "SELECT status FROM users WHERE id=?", (e["user_b"]["id"],)
+    ).fetchone()["status"] == "active"
+    assert conn.execute(
+        "SELECT user_id FROM teachers WHERE id=?", (e["teacher_b"],)
+    ).fetchone()["user_id"] == e["user_b"]["id"]
+    assert conn.execute(
+        "SELECT COUNT(*) FROM teacher_identity_events"
+    ).fetchone()[0] == 0
+    conn.close()
+
+
+def test_teacher_identity_revocation_requires_csrf_key_and_valid_reason(teacher_env):
+    e = teacher_env
+    client = e["app"].app.test_client()
+    csrf = login(client, e["admin_a"])
+    path = f"/api/school/teachers/{e['teacher_a']}/identity/revoke"
+    payload = {"reason_code": "identity_correction"}
+    no_csrf = client.post(
+        path, json=payload, headers={"Idempotency-Key": "teacher-revoke-no-csrf-0001"}
+    )
+    no_key = client.post(path, json=payload, headers={"X-CSRF-Token": csrf})
+    invalid_reason = client.post(
+        path,
+        json={"reason_code": ["identity_correction"]},
+        headers=headers(csrf, "teacher-revoke-invalid-reason-0001"),
+    )
+    extra_field = client.post(
+        path,
+        json={"reason_code": "identity_correction", "institution_id": e["tenant_b"]},
+        headers=headers(csrf, "teacher-revoke-extra-field-0001"),
+    )
+    assert no_csrf.status_code == 400
+    assert no_key.status_code == 400
+    assert invalid_reason.status_code == 400
+    assert extra_field.status_code == 400
+    conn = init_db(e["path"])
+    assert conn.execute(
+        "SELECT COUNT(*) FROM teacher_identity_events"
+    ).fetchone()[0] == 0
+    conn.close()
+
+
+def test_teacher_identity_revocation_rolls_back_if_audit_write_fails(teacher_env):
+    e = teacher_env
+    conn = init_db(e["path"])
+    conn.execute(
+        """
+        CREATE TRIGGER fail_teacher_identity_revocation_audit
+        BEFORE INSERT ON audit_log
+        WHEN NEW.action_type = 'teacher_identity_link_revoked'
+        BEGIN
+            SELECT RAISE(ABORT, 'teacher_identity_audit_unavailable');
+        END
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    client = e["app"].app.test_client()
+    csrf = login(client, e["admin_a"])
+    response = client.post(
+        f"/api/school/teachers/{e['teacher_a']}/identity/revoke",
+        json={"reason_code": "account_compromised"},
+        headers=headers(csrf, "teacher-revoke-audit-failure-0001"),
+    )
+    assert response.status_code == 500
+    conn = init_db(e["path"])
+    assert conn.execute(
+        "SELECT COUNT(*) FROM teacher_identity_links WHERE teacher_id=?",
+        (e["teacher_a"],),
+    ).fetchone()[0] == 1
+    assert conn.execute(
+        "SELECT user_id FROM teachers WHERE id=?", (e["teacher_a"],)
+    ).fetchone()["user_id"] == e["user_a"]["id"]
+    assert conn.execute(
+        "SELECT status FROM users WHERE id=?", (e["user_a"]["id"],)
+    ).fetchone()["status"] == "active"
+    assert conn.execute(
+        "SELECT COUNT(*) FROM teacher_identity_events"
+    ).fetchone()[0] == 0
+    conn.close()
+
+
+def test_teacher_link_without_teacher_portal_role_cannot_become_staff_session(teacher_env):
+    e = teacher_env
+    client = e["app"].app.test_client()
+    login(client, e["user_a"])
+    conn = init_db(e["path"])
+    conn.execute(
+        "DELETE FROM role_assignments WHERE user_id=?",
+        (e["user_a"]["id"],),
+    )
+    institution_admin_role = conn.execute(
+        "SELECT id FROM roles WHERE name='Institution Admin'"
+    ).fetchone()
+    conn.execute(
+        """INSERT INTO role_assignments
+           (id, user_id, role_id, scope_type, scope_id)
+           VALUES (?, ?, ?, 'institution', ?)""",
+        ("role-swap-" + uuid.uuid4().hex, e["user_a"]["id"],
+         institution_admin_role["id"], e["tenant_a"]),
+    )
+    conn.commit()
+    assert identity.active_tenant_identity(
+        conn, user_id=e["user_a"]["id"], institution_id=e["tenant_a"]
+    ) is False
+    assert identity.authenticate_school_user(
+        conn, email=e["user_a"]["email"], password="correct horse battery staple"
+    ) is None
+    conn.close()
+
+    response = client.get("/api/school/attendance")
+    assert response.status_code == 401
+    assert response.get_json()["error"] == "school_identity_inactive"
+    with client.session_transaction() as session:
+        assert "user_id" not in session
+
