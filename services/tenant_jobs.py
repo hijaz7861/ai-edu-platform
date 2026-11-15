@@ -2,6 +2,7 @@
 from __future__ import annotations
 import hashlib
 import json
+import os
 import re
 import sqlite3
 import uuid
@@ -9,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 from datetime import datetime, timedelta, timezone
 from services import identity
+from services.licensing import feature_allowed
 
 JOB_PERMISSIONS = {"tenant_health_check": "manage_institution"}
 RESOURCE_TABLES = {
@@ -17,12 +19,21 @@ RESOURCE_TABLES = {
     "exam_blueprints": "exam_blueprints",
     "question_banks": "question_banks",
 }
+RESOURCE_ENTITLEMENTS = {
+    "classes": "class_management",
+    "exam_blueprints": "exam_generation",
+    "question_banks": "question_bank_analysis",
+}
 MAX_PAYLOAD_BYTES = 8192
 MAX_RESULT_BYTES = 32768
 DEFAULT_MAX_ATTEMPTS = 3
 
 
 class JobAuthorizationError(PermissionError):
+    pass
+
+
+class JobEntitlementError(JobAuthorizationError):
     pass
 
 
@@ -164,7 +175,59 @@ def _key_hash(value):
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def _require_job_authority(conn, institution_id, actor_id, job_type):
+def _entitlements_enforced():
+    return (
+        os.environ.get("APP_ENV", "").strip().lower() == "production"
+        or os.environ.get("ENFORCE_ENTITLEMENTS", "0") == "1"
+    )
+
+
+def _decode_job_payload(payload_json):
+    try:
+        payload = json.loads(payload_json)
+        return _normalise_payload(payload)
+    except (TypeError, ValueError):
+        raise JobAuthorizationError("job_payload_invalid") from None
+
+
+def _resource_entitlements_allowed(conn, institution_id, payload):
+    if not _entitlements_enforced():
+        return True
+    if not isinstance(payload, dict) or set(payload) != {"resources"}:
+        return False
+    resources = payload.get("resources")
+    if (
+        not isinstance(resources, list)
+        or not resources
+        or len(resources) > len(RESOURCE_TABLES)
+        or any(not isinstance(resource, str) or resource not in RESOURCE_TABLES
+               for resource in resources)
+        or len(set(resources)) != len(resources)
+    ):
+        return False
+    for resource in resources:
+        feature = RESOURCE_ENTITLEMENTS.get(resource)
+        if feature and not feature_allowed(conn, institution_id, feature):
+            return False
+    return True
+
+
+def tenant_job_entitlements_allowed(conn, *, job_id, institution_id):
+    """Return false for an unknown/malformed job or a currently unentitled resource."""
+    row = conn.execute(
+        "SELECT payload_json FROM tenant_jobs WHERE id=? AND institution_id=?",
+        (job_id, institution_id),
+    ).fetchone()
+    if row is None:
+        return False
+    try:
+        payload = _decode_job_payload(row["payload_json"])
+    except JobAuthorizationError:
+        return False
+    return _resource_entitlements_allowed(conn, institution_id, payload)
+
+
+def _require_job_authority(conn, institution_id, actor_id, job_type, *, payload=None):
     if not identity.active_tenant_identity(
         conn, user_id=actor_id, institution_id=institution_id
     ):
@@ -175,6 +238,9 @@ def _require_job_authority(conn, institution_id, actor_id, job_type):
     required = JOB_PERMISSIONS[job_type]
     if "*" not in permissions and required not in permissions:
         raise JobAuthorizationError("job_permission_denied")
+    normalized = _normalise_payload(payload or {})
+    if not _resource_entitlements_allowed(conn, institution_id, normalized):
+        raise JobEntitlementError("job_entitlement_denied")
 
 
 def _event(conn, job_id, institution_id, actor_id, event_type, details=None):
@@ -205,7 +271,7 @@ def enqueue_job(conn, *, institution_id, actor_id, job_type, payload, idempotenc
 
     conn.execute("BEGIN IMMEDIATE")
     try:
-        _require_job_authority(conn, institution_id, actor_id, job_type)
+        _require_job_authority(conn, institution_id, actor_id, job_type, payload=normalized)
         existing = conn.execute(
             """SELECT id, request_hash FROM tenant_jobs
                WHERE institution_id = ? AND idempotency_key_hash = ?""",
@@ -345,7 +411,8 @@ def renew_job_lease(conn, job_id, worker_id, *, lease_seconds=120):
             # A long-running handler must not keep renewing work after the
             # initiating school user's identity, tenant or permission is revoked.
             _require_job_authority(
-                conn, job["institution_id"], job["actor_id"], job["job_type"]
+                conn, job["institution_id"], job["actor_id"], job["job_type"],
+                payload=_decode_job_payload(job["payload_json"]),
             )
         except JobAuthorizationError:
             changed = conn.execute(
@@ -395,6 +462,32 @@ def _finish_success(conn, *, job_id, worker_id, result_json):
         row = _owned_job(conn, job_id, worker_id)
         if row is None:
             raise LeaseLost("worker_lease_lost")
+        try:
+            _require_job_authority(
+                conn, row["institution_id"], row["actor_id"], row["job_type"],
+                payload=_decode_job_payload(row["payload_json"]),
+            )
+        except JobAuthorizationError:
+            now = _utcnow()
+            changed = conn.execute(
+                """UPDATE tenant_jobs
+                   SET status='failed', last_error_code='authorization_revoked',
+                       locked_by=NULL, lease_expires_at=NULL,
+                       completed_at=?, updated_at=?
+                   WHERE id=? AND status='running' AND locked_by=?
+                     AND lease_expires_at > ?""",
+                (now, now, job_id, worker_id, now),
+            ).rowcount
+            if changed != 1:
+                raise LeaseLost("worker_lease_lost")
+            _event(
+                conn, job_id, row["institution_id"], row["actor_id"],
+                "job_failed",
+                {"error_code": "authorization_revoked",
+                 "attempt": row["attempt_count"]},
+            )
+            conn.commit()
+            raise LeaseLost("worker_authorization_revoked")
         now = _utcnow()
         conn.execute(
             """UPDATE tenant_jobs SET status='succeeded', result_json=?,
@@ -461,8 +554,10 @@ def run_once(conn, worker_id, handlers, *, lease_seconds=120):
         return None
     job_id = job["id"]
     try:
-        _require_job_authority(conn, job["institution_id"], job["actor_id"],
-                               job["job_type"])
+        _require_job_authority(
+            conn, job["institution_id"], job["actor_id"], job["job_type"],
+            payload=_decode_job_payload(job["payload_json"]),
+        )
     except JobAuthorizationError:
         try:
             status = _finish_failure(conn, job_id=job_id, worker_id=worker_id,
