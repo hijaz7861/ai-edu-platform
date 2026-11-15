@@ -235,10 +235,12 @@ def _require_job_authority(conn, institution_id, actor_id, job_type, *, payload=
     permissions = identity.institution_permissions(
         conn, user_id=actor_id, institution_id=institution_id
     )
+    if job_type not in JOB_PERMISSIONS:
+        raise JobAuthorizationError("job_type_invalid")
     required = JOB_PERMISSIONS[job_type]
     if "*" not in permissions and required not in permissions:
         raise JobAuthorizationError("job_permission_denied")
-    normalized = _normalise_payload(payload or {})
+    normalized = _normalise_payload(payload if payload is not None else {})
     if not _resource_entitlements_allowed(conn, institution_id, normalized):
         raise JobEntitlementError("job_entitlement_denied")
 
