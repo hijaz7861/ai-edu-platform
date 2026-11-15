@@ -39,6 +39,8 @@ The current numbered migrations cover:
 3. Institution-scoped idempotency metadata for tenant leave submissions.
 4. A 24-hour expiry column/backfill for legacy leave retry keys, including removal of immutability triggers from operational retry metadata.
 5. Institution-scoped idempotency metadata for tenant attendance events, with expiry indexes.
+6. Tenant-bound teacher identity links with unique user/teacher scope and reassignment guards.
+7. Immutable teacher identity revocation events, idempotent revocation keys and event-backed link deletion.
 
 Migration code and its ledger entry commit atomically. Repeated initialization is idempotent. Existing case-variant duplicate emails are preserved; the case-insensitive unique index is installed only after duplicates are resolved. CI regressions cover legacy upgrade, repeated startup, duplicate preservation/reconciliation and four concurrent initializers.
 
