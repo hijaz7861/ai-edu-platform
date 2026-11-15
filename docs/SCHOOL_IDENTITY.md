@@ -39,7 +39,7 @@ profile. Class listing is tenant-scoped and permits Institution Admin,
 Principal and Academic Coordinator (`manage_curriculum`). Class creation and
 job enqueue require `manage_institution`. Teacher identity revocation requires
 `manage_users` and is limited to the authenticated institution. Job status is
- tenant-scoped and
+tenant-scoped and
 permits Institution Admin and Principal (`view_all_reports`). Attendance reads
 require `manage_institution`, `view_all_reports`, or `manage_attendance_policy`
 and the `attendance` entitlement. Leave-request reads require
