@@ -456,6 +456,8 @@ def test_teacher_identity_revocation_is_audited_idempotent_and_allows_reassignme
     ).fetchone()[0] == 0
     assert event["event_type"] == "revoked"
     assert event["reason_code"] == "employment_ended"
+    assert len(event["idempotency_key_hash"]) == 64
+    assert request_headers["Idempotency-Key"] not in event["idempotency_key_hash"]
     assert event["actor_id"] == e["admin_a"]["id"]
     assert audit["action_type"] == "teacher_identity_link_revoked"
     assert audit["entity_type"] == "teacher_identity_events"
