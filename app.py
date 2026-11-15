@@ -21,7 +21,10 @@ from services.login_throttle import clear_failures, is_locked, record_failure
 from services.api_rate_limit import allow_request
 from services.security_audit import append_security_event
 from services import identity
-from services.tenant_jobs import enqueue_job, get_tenant_job, JobAuthorizationError, IdempotencyConflict
+from services.tenant_jobs import (
+    enqueue_job, get_tenant_job, JobAuthorizationError, JobEntitlementError,
+    IdempotencyConflict, tenant_job_entitlements_allowed,
+)
 from services.tenant_leave import (
     create_school_leave_request, decide_school_leave_approval,
     LeaveAuthorizationError, LeaveIdempotencyConflict,
@@ -1103,6 +1106,8 @@ def school_create_job():
             payload=body,
             idempotency_key=request.headers.get("Idempotency-Key"),
         )
+    except JobEntitlementError:
+        return err("subscription_required", 403)
     except JobAuthorizationError:
         return err("permission_denied", 403)
     except IdempotencyConflict:
@@ -1129,6 +1134,10 @@ def school_get_job(job_id):
     )
     if job is None:
         return err("job_not_found", 404)
+    if not tenant_job_entitlements_allowed(
+        get_db(), job_id=job_id, institution_id=session["institution_id"]
+    ):
+        return err("subscription_required", 403)
     return jsonify(job)
 
 
