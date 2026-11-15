@@ -38,20 +38,22 @@ All authenticated institution roles may read their own `/api/school/me`
 profile. Class listing is tenant-scoped and permits Institution Admin,
 Principal and Academic Coordinator (`manage_curriculum`). Class creation and
 job enqueue require `manage_institution`. Teacher identity revocation requires
-`manage_users` and is limited to the authenticated institution. Job status is tenant-scoped and
+`manage_users` and is limited to the authenticated institution. Job status is
+ tenant-scoped and
 permits Institution Admin and Principal (`view_all_reports`). Attendance reads
 require `manage_institution`, `view_all_reports`, or `manage_attendance_policy`
 and the `attendance` entitlement. Leave-request reads require
 `manage_institution`, `approve_leave`, or `view_all_reports` and the
 `leave_management` entitlement.
 
-| Institution role | Read own profile | List own classes | Create class | List question-bank metadata | List exam-blueprint metadata | Read attendance | List leave requests | Create leave request | Decide leave approval | Enqueue job | Read tenant job |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Institution Admin | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No | Yes | Yes |
-| Principal | Yes | Yes | No | No | Yes | Yes | Yes | Yes | Yes | No | Yes |
-| Academic Coordinator | Yes | Yes | No | Yes | Yes | No | No | No | No | No | No |
-| Examiner | Yes | No | No | Yes | Yes | No | No | No | No | No | No |
-| HR/Attendance Officer | Yes | No | No | No | No | Yes | Yes | Yes | Yes | No | No |
+| Institution role | Read own profile | List own classes | Create class | List question-bank metadata | List exam-blueprint metadata | Read attendance | List leave requests | Create leave request | Decide leave approval | Enqueue job | Read tenant job | Revoke teacher identity |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Institution Admin | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No | Yes | Yes | Yes |
+| Principal | Yes | Yes | No | No | Yes | Yes | Yes | Yes | Yes | No | Yes | No |
+| Academic Coordinator | Yes | Yes | No | Yes | Yes | No | No | No | No | No | No | No |
+| Examiner | Yes | No | No | Yes | Yes | No | No | No | No | No | No | No |
+| HR/Attendance Officer | Yes | No | No | No | No | Yes | Yes | Yes | Yes | No | No | No |
+| Teacher Portal | Yes | No | No | No | No | No | No | No | No | No | No | No |
 
 This is not a blanket permission for future endpoints. New routes and methods
 remain denied until explicitly added to the exact route allowlist and covered
