@@ -434,17 +434,13 @@ def revoke_teacher_identity_link(
         if link["user_id"] == actor_id:
             raise TeacherIdentityAuthorizationError("self_revocation_not_allowed")
         assignments = conn.execute(
-            """SELECT r.name, r.scope_level
+            """SELECT r.name, ra.scope_type, ra.scope_id
                FROM role_assignments ra JOIN roles r ON r.id = ra.role_id
-               WHERE ra.user_id = ? AND ra.scope_type = 'institution'
-                 AND ra.scope_id = ?""",
-            (link["user_id"], institution_id),
+               WHERE ra.user_id = ? ORDER BY ra.scope_type, ra.scope_id, r.name""",
+            (link["user_id"],),
         ).fetchall()
         if (
             link["teacher_user_id"] != link["user_id"]
-            or len(assignments) != 1
-            or assignments[0]["name"] != "Teacher Portal"
-            or assignments[0]["scope_level"] != "institution"
             or not isinstance(link["link_id"], str)
             or not re.fullmatch(r"[0-9a-f]{32}", link["link_id"])
         ):
@@ -475,11 +471,23 @@ def revoke_teacher_identity_link(
                         "link_id": link["link_id"],
                         "user_id": link["user_id"],
                         "teacher_id": teacher_id,
+                        "role_assignments": [
+                            {
+                                "role": item["name"],
+                                "scope_type": item["scope_type"],
+                                "scope_id": item["scope_id"],
+                            }
+                            for item in assignments
+                        ],
                     },
                     sort_keys=True,
                 ),
                 json.dumps(
-                    {"revoked": True, "reason_code": reason_code},
+                    {
+                        "revoked": True,
+                        "reason_code": reason_code,
+                        "role_assignments_removed": len(assignments),
+                    },
                     sort_keys=True,
                 ),
             ),
@@ -491,9 +499,16 @@ def revoke_teacher_identity_link(
         ).rowcount
         if unlinked != 1:
             raise TeacherIdentityConflict("teacher_identity_state_conflict")
+        # Revoke every role attached to this linked account, including stale or
+        # unexpectedly added roles. The account is suspended in the same
+        # transaction so it cannot be converted into a staff session by link removal.
+        conn.execute(
+            "DELETE FROM role_assignments WHERE user_id = ?",
+            (link["user_id"],),
+        )
         conn.execute(
             """UPDATE users SET status = 'suspended'
-               WHERE id = ? AND institution_id = ? AND status = 'active'""",
+               WHERE id = ? AND institution_id = ? AND status <> 'suspended'""",
             (link["user_id"], institution_id),
         )
         deleted = conn.execute(
