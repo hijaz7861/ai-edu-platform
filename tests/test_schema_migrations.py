@@ -262,6 +262,7 @@ def test_teacher_identity_link_migration_enforces_tenant_scope_and_role(tmp_path
 
 
 def test_teacher_identity_revocation_migration_backfills_legacy_link_ids(tmp_path):
+    import pytest
     from services.schema_migrations import _add_teacher_identity_revocation_workflow
 
     conn = sqlite3.connect(":memory:")
