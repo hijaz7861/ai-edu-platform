@@ -261,6 +261,54 @@ def test_teacher_identity_link_migration_enforces_tenant_scope_and_role(tmp_path
     conn.close()
 
 
+def test_teacher_identity_revocation_migration_backfills_legacy_link_ids(tmp_path):
+    from services.schema_migrations import _add_teacher_identity_revocation_workflow
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(
+        """
+        CREATE TABLE institutions(id TEXT PRIMARY KEY, status TEXT);
+        CREATE TABLE users(id TEXT PRIMARY KEY, institution_id TEXT, status TEXT);
+        CREATE TABLE teachers(
+            id TEXT PRIMARY KEY, user_id TEXT, institution_id TEXT, status TEXT
+        );
+        CREATE TABLE teacher_identity_links(
+            user_id TEXT PRIMARY KEY,
+            teacher_id TEXT NOT NULL UNIQUE,
+            institution_id TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO institutions(id, status) VALUES ('tenant-a', 'active');
+        INSERT INTO users(id, institution_id, status)
+        VALUES ('user-a', 'tenant-a', 'active');
+        INSERT INTO teachers(id, user_id, institution_id, status)
+        VALUES ('teacher-a', 'user-a', 'tenant-a', 'active');
+        INSERT INTO teacher_identity_links(user_id, teacher_id, institution_id)
+        VALUES ('user-a', 'teacher-a', 'tenant-a');
+        """
+    )
+
+    _add_teacher_identity_revocation_workflow(conn)
+    link = conn.execute(
+        "SELECT link_id FROM teacher_identity_links WHERE user_id='user-a'"
+    ).fetchone()
+    assert link is not None
+    assert len(link["link_id"]) == 32
+    assert all(char in "0123456789abcdef" for char in link["link_id"])
+    assert conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='teacher_identity_events'"
+    ).fetchone() is not None
+    with pytest.raises(sqlite3.IntegrityError, match="audited revocation"):
+        conn.execute("DELETE FROM teacher_identity_links WHERE user_id='user-a'")
+    with pytest.raises(sqlite3.IntegrityError, match="audited revocation workflow"):
+        conn.execute(
+            "UPDATE teacher_identity_links SET link_id='cccccccccccccccccccccccccccccccc' "
+            "WHERE user_id='user-a'"
+        )
+    conn.close()
+
+
 def test_teacher_identity_link_prevents_later_tenant_reassignment(tmp_path):
     conn = init_db(str(tmp_path / "teacher-identity-reassignment.sqlite"))
     role = conn.execute(
