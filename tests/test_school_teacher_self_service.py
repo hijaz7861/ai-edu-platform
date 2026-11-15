@@ -450,6 +450,10 @@ def test_teacher_identity_revocation_is_audited_idempotent_and_allows_reassignme
     assert link_count == 0
     assert teacher["user_id"] is None
     assert old_user["status"] == "suspended"
+    assert conn.execute(
+        "SELECT COUNT(*) FROM role_assignments WHERE user_id=?",
+        (e["user_a"]["id"],),
+    ).fetchone()[0] == 0
     assert event["event_type"] == "revoked"
     assert event["reason_code"] == "employment_ended"
     assert event["actor_id"] == e["admin_a"]["id"]
@@ -655,4 +659,62 @@ def test_teacher_link_without_teacher_portal_role_cannot_become_staff_session(te
     assert response.get_json()["error"] == "school_identity_inactive"
     with client.session_transaction() as session:
         assert "user_id" not in session
+
+def test_teacher_identity_revocation_cleans_stale_role_escalation_and_allows_reassignment(teacher_env):
+    e = teacher_env
+    conn = init_db(e["path"])
+    elevated_role = conn.execute(
+        "SELECT id FROM roles WHERE name='Institution Admin'"
+    ).fetchone()
+    conn.execute(
+        """INSERT INTO role_assignments(id, user_id, role_id, scope_type, scope_id)
+           VALUES (?, ?, ?, 'institution', ?)""",
+        (
+            "unexpected-role-" + uuid.uuid4().hex,
+            e["user_a"]["id"],
+            elevated_role["id"],
+            e["tenant_a"],
+        ),
+    )
+    conn.commit()
+    assert identity.active_tenant_identity(
+        conn, user_id=e["user_a"]["id"], institution_id=e["tenant_a"]
+    ) is False
+    conn.close()
+
+    client = e["app"].app.test_client()
+    csrf = login(client, e["admin_a"])
+    response = client.post(
+        f"/api/school/teachers/{e['teacher_a']}/identity/revoke",
+        json={"reason_code": "identity_correction"},
+        headers=headers(csrf, "teacher-revoke-stale-role-0001"),
+    )
+    assert response.status_code == 200
+
+    conn = init_db(e["path"])
+    assert conn.execute(
+        "SELECT COUNT(*) FROM role_assignments WHERE user_id=?",
+        (e["user_a"]["id"],),
+    ).fetchone()[0] == 0
+    audit = conn.execute(
+        """SELECT before_state FROM audit_log
+           WHERE entity_id=? AND action_type='teacher_identity_link_revoked'""",
+        (response.get_json()["revocation_id"],),
+    ).fetchone()
+    assert "Institution Admin" in audit["before_state"]
+    assert "Teacher Portal" in audit["before_state"]
+
+    replacement = identity.create_school_user(
+        conn,
+        email="stale-role-replacement@example.test",
+        password="correct horse battery staple",
+        institution_id=e["tenant_a"],
+        role_name="Teacher Portal",
+        teacher_id=e["teacher_a"],
+        granted_by=e["admin_a"]["id"],
+    )
+    assert identity.linked_teacher_for_school_user(
+        conn, user_id=replacement["id"], institution_id=e["tenant_a"]
+    )["id"] == e["teacher_a"]
+    conn.close()
 
