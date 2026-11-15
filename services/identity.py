@@ -3,6 +3,8 @@ import json
 import re
 import sqlite3
 import uuid
+import hashlib
+from datetime import datetime, timezone
 from werkzeug.security import check_password_hash, generate_password_hash
 
 _ALLOWED_INSTITUTION_ROLES = frozenset({
@@ -95,9 +97,9 @@ def create_school_user(conn, *, email, password, institution_id, role_name, gran
                 raise ValueError("teacher_identity_unavailable")
             conn.execute(
                 """INSERT INTO teacher_identity_links
-                   (user_id, teacher_id, institution_id)
-                   VALUES (?, ?, ?)""",
-                (user_id, teacher_id, institution_id),
+                   (link_id, user_id, teacher_id, institution_id)
+                   VALUES (?, ?, ?, ?)""",
+                (uuid.uuid4().hex, user_id, teacher_id, institution_id),
             )
         # Provisioning is security-relevant and must commit atomically with
         # the user, role assignment, and optional teacher link.
@@ -181,6 +183,13 @@ def authenticate_school_user(conn, *, email, password):
         return None
     if any(item["name"] == "Teacher Portal" for item in assignment) and len(assignment) != 1:
         return None
+    # Authentication and request-time middleware must enforce the same
+    # bidirectional teacher-link invariant. A stale link after role removal
+    # must not silently turn a Teacher Portal account into a staff account.
+    if not active_tenant_identity(
+        conn, user_id=row["id"], institution_id=row["institution_id"]
+    ):
+        return None
     return {
         "id": row["id"],
         "email": row["email"],
@@ -210,24 +219,40 @@ def active_tenant_identity(conn, *, user_id, institution_id):
                 AND r.scope_level = 'institution'
           )
           AND (
-              NOT EXISTS (
-                  SELECT 1
-                  FROM role_assignments teacher_ra
-                  JOIN roles teacher_role ON teacher_role.id = teacher_ra.role_id
-                  WHERE teacher_ra.user_id = u.id
-                    AND teacher_ra.scope_type = 'institution'
-                    AND teacher_ra.scope_id = u.institution_id
-                    AND teacher_role.scope_level = 'institution'
-                    AND teacher_role.name = 'Teacher Portal'
+              (
+                  NOT EXISTS (
+                      SELECT 1
+                      FROM role_assignments teacher_ra
+                      JOIN roles teacher_role ON teacher_role.id = teacher_ra.role_id
+                      WHERE teacher_ra.user_id = u.id
+                        AND teacher_ra.scope_type = 'institution'
+                        AND teacher_ra.scope_id = u.institution_id
+                        AND teacher_role.scope_level = 'institution'
+                        AND teacher_role.name = 'Teacher Portal'
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM teacher_identity_links stale_link
+                      WHERE stale_link.user_id = u.id
+                  )
               )
               OR (
-                  (SELECT COUNT(*)
-                   FROM role_assignments scoped_ra
-                   JOIN roles scoped_role ON scoped_role.id = scoped_ra.role_id
-                   WHERE scoped_ra.user_id = u.id
-                     AND scoped_ra.scope_type = 'institution'
-                     AND scoped_ra.scope_id = u.institution_id
-                     AND scoped_role.scope_level = 'institution') = 1
+                  EXISTS (
+                      SELECT 1
+                      FROM role_assignments teacher_ra
+                      JOIN roles teacher_role ON teacher_role.id = teacher_ra.role_id
+                      WHERE teacher_ra.user_id = u.id
+                        AND teacher_ra.scope_type = 'institution'
+                        AND teacher_ra.scope_id = u.institution_id
+                        AND teacher_role.scope_level = 'institution'
+                        AND teacher_role.name = 'Teacher Portal'
+                  )
+                  AND (SELECT COUNT(*)
+                       FROM role_assignments scoped_ra
+                       JOIN roles scoped_role ON scoped_role.id = scoped_ra.role_id
+                       WHERE scoped_ra.user_id = u.id
+                         AND scoped_ra.scope_type = 'institution'
+                         AND scoped_ra.scope_id = u.institution_id
+                         AND scoped_role.scope_level = 'institution') = 1
                   AND EXISTS (
                       SELECT 1
                       FROM teacher_identity_links l
@@ -299,3 +324,198 @@ def linked_teacher_for_school_user(conn, *, user_id, institution_id):
         (user_id, institution_id),
     ).fetchone()
     return dict(row) if row is not None else None
+
+class TeacherIdentityAuthorizationError(PermissionError):
+    pass
+
+
+class TeacherIdentityNotFound(LookupError):
+    pass
+
+
+class TeacherIdentityIdempotencyConflict(ValueError):
+    pass
+
+
+class TeacherIdentityConflict(RuntimeError):
+    pass
+
+
+class TeacherIdentityAuditError(RuntimeError):
+    pass
+
+
+_TEACHER_IDENTITY_REVOCATION_REASONS = frozenset({
+    "employment_ended",
+    "account_compromised",
+    "identity_correction",
+    "teacher_reassignment",
+})
+
+
+def revoke_teacher_identity_link(
+    conn, *, institution_id, actor_id, teacher_id, reason_code, idempotency_key
+):
+    """Atomically revoke a teacher login, retain an immutable event, and free the teacher link."""
+    if conn.in_transaction:
+        raise ValueError("identity_revocation_requires_clean_connection")
+    if not isinstance(institution_id, str) or not institution_id.strip():
+        raise TeacherIdentityAuthorizationError("active_tenant_identity_required")
+    if not isinstance(actor_id, str) or not actor_id.strip():
+        raise TeacherIdentityAuthorizationError("active_tenant_identity_required")
+    if not isinstance(teacher_id, str) or not teacher_id.strip() or len(teacher_id) > 128:
+        raise ValueError("invalid_teacher_id")
+    if reason_code not in _TEACHER_IDENTITY_REVOCATION_REASONS:
+        raise ValueError("invalid_revocation_reason")
+    if (
+        not isinstance(idempotency_key, str)
+        or not 8 <= len(idempotency_key) <= 128
+        or not re.fullmatch(r"[A-Za-z0-9._:-]+", idempotency_key)
+    ):
+        raise ValueError("valid_idempotency_key_required")
+
+    key_hash = hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()
+    request_hash = hashlib.sha256(
+        json.dumps(
+            {
+                "institution_id": institution_id,
+                "teacher_id": teacher_id,
+                "reason_code": reason_code,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if not active_tenant_identity(
+            conn, user_id=actor_id, institution_id=institution_id
+        ):
+            raise TeacherIdentityAuthorizationError("active_tenant_identity_required")
+        permissions = institution_permissions(
+            conn, user_id=actor_id, institution_id=institution_id
+        )
+        if "*" not in permissions and "manage_users" not in permissions:
+            raise TeacherIdentityAuthorizationError("permission_denied")
+
+        prior = conn.execute(
+            """SELECT id, user_id, teacher_id, reason_code, request_hash
+               FROM teacher_identity_events
+               WHERE institution_id = ? AND actor_id = ?
+                 AND idempotency_key_hash = ?""",
+            (institution_id, actor_id, key_hash),
+        ).fetchone()
+        if prior is not None:
+            if prior["request_hash"] != request_hash:
+                raise TeacherIdentityIdempotencyConflict("idempotency_key_conflict")
+            conn.commit()
+            return {
+                "revocation_id": prior["id"],
+                "user_id": prior["user_id"],
+                "teacher_id": prior["teacher_id"],
+                "revoked": True,
+                "created": False,
+            }
+
+        link = conn.execute(
+            """SELECT l.link_id, l.user_id, l.teacher_id, l.institution_id,
+                      u.status AS user_status, t.user_id AS teacher_user_id
+               FROM teacher_identity_links l
+               JOIN users u ON u.id = l.user_id
+               JOIN teachers t ON t.id = l.teacher_id
+               WHERE l.teacher_id = ? AND l.institution_id = ?
+                 AND u.institution_id = l.institution_id
+                 AND t.institution_id = l.institution_id""",
+            (teacher_id, institution_id),
+        ).fetchone()
+        if link is None:
+            raise TeacherIdentityNotFound("teacher_identity_not_found")
+        if link["user_id"] == actor_id:
+            raise TeacherIdentityAuthorizationError("self_revocation_not_allowed")
+        assignments = conn.execute(
+            """SELECT r.name, r.scope_level
+               FROM role_assignments ra JOIN roles r ON r.id = ra.role_id
+               WHERE ra.user_id = ? AND ra.scope_type = 'institution'
+                 AND ra.scope_id = ?""",
+            (link["user_id"], institution_id),
+        ).fetchall()
+        if (
+            link["teacher_user_id"] != link["user_id"]
+            or len(assignments) != 1
+            or assignments[0]["name"] != "Teacher Portal"
+            or assignments[0]["scope_level"] != "institution"
+            or not isinstance(link["link_id"], str)
+            or not re.fullmatch(r"[0-9a-f]{32}", link["link_id"])
+        ):
+            raise TeacherIdentityConflict("teacher_identity_state_conflict")
+
+        event_id = uuid.uuid4().hex
+        now = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            """INSERT INTO teacher_identity_events
+               (id, link_id, user_id, teacher_id, institution_id, actor_id,
+                event_type, reason_code, idempotency_key_hash, request_hash, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, 'revoked', ?, ?, ?, ?)""",
+            (
+                event_id, link["link_id"], link["user_id"], teacher_id,
+                institution_id, actor_id, reason_code, key_hash, request_hash, now,
+            ),
+        )
+        conn.execute(
+            """INSERT INTO audit_log
+               (id, institution_id, actor_id, action_type, entity_type, entity_id,
+                before_state, after_state)
+               VALUES (?, ?, ?, 'teacher_identity_link_revoked',
+                       'teacher_identity_events', ?, ?, ?)""",
+            (
+                uuid.uuid4().hex, institution_id, actor_id, event_id,
+                json.dumps(
+                    {
+                        "link_id": link["link_id"],
+                        "user_id": link["user_id"],
+                        "teacher_id": teacher_id,
+                    },
+                    sort_keys=True,
+                ),
+                json.dumps(
+                    {"revoked": True, "reason_code": reason_code},
+                    sort_keys=True,
+                ),
+            ),
+        )
+        unlinked = conn.execute(
+            """UPDATE teachers SET user_id = NULL
+               WHERE id = ? AND institution_id = ? AND user_id = ?""",
+            (teacher_id, institution_id, link["user_id"]),
+        ).rowcount
+        if unlinked != 1:
+            raise TeacherIdentityConflict("teacher_identity_state_conflict")
+        conn.execute(
+            """UPDATE users SET status = 'suspended'
+               WHERE id = ? AND institution_id = ? AND status = 'active'""",
+            (link["user_id"], institution_id),
+        )
+        deleted = conn.execute(
+            """DELETE FROM teacher_identity_links
+               WHERE link_id = ? AND user_id = ? AND teacher_id = ?
+                 AND institution_id = ?""",
+            (link["link_id"], link["user_id"], teacher_id, institution_id),
+        ).rowcount
+        if deleted != 1:
+            raise TeacherIdentityConflict("teacher_identity_state_conflict")
+        conn.commit()
+        return {
+            "revocation_id": event_id,
+            "user_id": link["user_id"],
+            "teacher_id": teacher_id,
+            "revoked": True,
+            "created": True,
+        }
+    except sqlite3.IntegrityError as exc:
+        conn.rollback()
+        raise TeacherIdentityAuditError("teacher_identity_revocation_audit_failed") from None
+    except Exception:
+        conn.rollback()
+        raise
+
