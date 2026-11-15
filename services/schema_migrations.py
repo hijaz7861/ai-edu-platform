@@ -244,6 +244,134 @@ def _add_teacher_identity_links(conn: sqlite3.Connection) -> None:
     )
 
 
+def _add_teacher_identity_revocation_workflow(conn: sqlite3.Connection) -> None:
+    """Add immutable revocation events and permit only event-backed link deletion."""
+    columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(teacher_identity_links)").fetchall()
+    }
+    if "link_id" not in columns:
+        conn.execute("ALTER TABLE teacher_identity_links ADD COLUMN link_id TEXT")
+    conn.execute(
+        """UPDATE teacher_identity_links
+           SET link_id = lower(hex(randomblob(16)))
+           WHERE link_id IS NULL OR length(link_id) != 32"""
+    )
+    conn.execute(
+        """CREATE UNIQUE INDEX IF NOT EXISTS idx_teacher_identity_links_link_id
+           ON teacher_identity_links(link_id)"""
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS teacher_identity_events (
+            id TEXT PRIMARY KEY,
+            link_id TEXT NOT NULL UNIQUE,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+            teacher_id TEXT NOT NULL REFERENCES teachers(id) ON DELETE RESTRICT,
+            institution_id TEXT NOT NULL REFERENCES institutions(id) ON DELETE RESTRICT,
+            actor_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+            event_type TEXT NOT NULL CHECK (event_type = 'revoked'),
+            reason_code TEXT NOT NULL CHECK (reason_code IN (
+                'employment_ended', 'account_compromised',
+                'identity_correction', 'teacher_reassignment'
+            )),
+            idempotency_key_hash TEXT NOT NULL CHECK (length(idempotency_key_hash) = 64),
+            request_hash TEXT NOT NULL CHECK (length(request_hash) = 64),
+            created_at TEXT NOT NULL,
+            UNIQUE(institution_id, actor_id, idempotency_key_hash)
+        )
+        """
+    )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_teacher_identity_events_tenant
+           ON teacher_identity_events(institution_id, created_at)"""
+    )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_teacher_identity_events_user
+           ON teacher_identity_events(user_id, created_at)"""
+    )
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS teacher_identity_links_link_id_required
+        BEFORE INSERT ON teacher_identity_links
+        WHEN NEW.link_id IS NULL OR length(NEW.link_id) != 32
+             OR NEW.link_id GLOB '*[^0-9a-f]*'
+        BEGIN
+            SELECT RAISE(ABORT, 'teacher_identity_link_id_required');
+        END
+        """
+    )
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS teacher_identity_events_scope_insert
+        BEFORE INSERT ON teacher_identity_events
+        WHEN NOT EXISTS (
+            SELECT 1
+            FROM teacher_identity_links l
+            JOIN users u ON u.id = l.user_id
+            JOIN teachers t ON t.id = l.teacher_id
+            JOIN institutions i ON i.id = l.institution_id
+            JOIN users actor ON actor.id = NEW.actor_id
+            WHERE l.link_id = NEW.link_id
+              AND l.user_id = NEW.user_id
+              AND l.teacher_id = NEW.teacher_id
+              AND l.institution_id = NEW.institution_id
+              AND u.institution_id = NEW.institution_id
+              AND t.institution_id = NEW.institution_id
+              AND t.user_id = u.id
+              AND actor.institution_id = NEW.institution_id
+              AND actor.status = 'active'
+              AND i.status = 'active'
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'teacher_identity_revocation_scope_mismatch');
+        END
+        """
+    )
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS teacher_identity_events_no_update
+        BEFORE UPDATE ON teacher_identity_events BEGIN
+            SELECT RAISE(ABORT, 'teacher identity events are append-only');
+        END
+        """
+    )
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS teacher_identity_events_no_delete
+        BEFORE DELETE ON teacher_identity_events BEGIN
+            SELECT RAISE(ABORT, 'teacher identity events are append-only');
+        END
+        """
+    )
+    conn.execute("DROP TRIGGER IF EXISTS teacher_identity_links_no_delete")
+    conn.execute(
+        """
+        CREATE TRIGGER teacher_identity_links_no_delete
+        BEFORE DELETE ON teacher_identity_links
+        WHEN NOT EXISTS (
+            SELECT 1 FROM teacher_identity_events e
+            WHERE e.link_id = OLD.link_id
+              AND e.user_id = OLD.user_id
+              AND e.teacher_id = OLD.teacher_id
+              AND e.institution_id = OLD.institution_id
+              AND e.event_type = 'revoked'
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'teacher identity link requires an audited revocation event');
+        END
+        """
+    )
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS teacher_identity_links_no_update
+        BEFORE UPDATE ON teacher_identity_links BEGIN
+            SELECT RAISE(ABORT, 'teacher identity links require an audited revocation workflow');
+        END
+        """
+    )
+
+
 _MIGRATIONS = (
     (1, "school_identity_password_hash", _add_school_password_hash),
     (2, "tenant_background_jobs", _add_tenant_job_schema),
@@ -251,6 +379,7 @@ _MIGRATIONS = (
     (4, "tenant_leave_key_retention_window", _upgrade_tenant_leave_key_retention),
     (5, "tenant_attendance_event_idempotency", _add_tenant_attendance_event_keys),
     (6, "tenant_teacher_identity_links", _add_teacher_identity_links),
+    (7, "teacher_identity_revocation_workflow", _add_teacher_identity_revocation_workflow),
 )
 
 
