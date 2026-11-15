@@ -193,6 +193,7 @@ _SCHOOL_API_ROUTE_METHODS = frozenset({
     ("school_teacher_create_attendance_event", "POST"),
     ("school_teacher_leave_requests", "GET"),
     ("school_teacher_create_leave_request", "POST"),
+    ("school_revoke_teacher_identity", "POST"),
     ("school_classes", "GET"),
     ("school_create_class", "POST"),
     ("school_question_banks", "GET"),
@@ -227,6 +228,7 @@ _ROUTE_ACCESS_POLICIES = {
     "school_teacher_create_attendance_event": ("school_user", frozenset({"POST"})),
     "school_teacher_leave_requests": ("school_user", frozenset({"GET"})),
     "school_teacher_create_leave_request": ("school_user", frozenset({"POST"})),
+    "school_revoke_teacher_identity": ("school_user", frozenset({"POST"})),
     "school_classes": ("school_user", frozenset({"GET"})),
     "school_create_class": ("school_user", frozenset({"POST"})),
     "school_question_banks": ("school_user", frozenset({"GET"})),
@@ -810,6 +812,44 @@ def school_teacher_create_leave_request():
     except ValueError as exc:
         return err(str(exc), 400)
     return jsonify({"id": leave_request_id, "status": status}), 201 if created else 200
+
+
+@app.post("/api/school/teachers/<teacher_id>/identity/revoke")
+def school_revoke_teacher_identity(teacher_id):
+    """Revoke and audit a tenant-owned Teacher Portal link; only user managers may do so."""
+    body = request.get_json(silent=True)
+    if body is None:
+        if request.data:
+            return err("invalid_json", 400)
+        body = {}
+    if not isinstance(body, dict) or set(body) - {"reason_code"}:
+        return err("unsupported_payload", 400)
+    if "reason_code" not in body:
+        return err("required_fields_missing", 400)
+
+    try:
+        result = identity.revoke_teacher_identity_link(
+            get_db(),
+            institution_id=session["institution_id"],
+            actor_id=session["user_id"],
+            teacher_id=teacher_id,
+            reason_code=body.get("reason_code"),
+            idempotency_key=request.headers.get("Idempotency-Key"),
+        )
+    except identity.TeacherIdentityAuthorizationError:
+        return err("permission_denied", 403)
+    except identity.TeacherIdentityNotFound:
+        return err("teacher_identity_not_found", 404)
+    except identity.TeacherIdentityIdempotencyConflict:
+        return err("idempotency_key_conflict", 409)
+    except identity.TeacherIdentityConflict:
+        return err("teacher_identity_state_conflict", 409)
+    except identity.TeacherIdentityAuditError:
+        app.logger.exception("Failed to persist teacher identity revocation audit")
+        return err("teacher_identity_revocation_failed", 500)
+    except ValueError as exc:
+        return err(str(exc), 400)
+    return jsonify(result)
 
 
 @app.get("/api/school/attendance")
