@@ -7,8 +7,8 @@ This increment adds a persistent SQLite queue, an authenticated tenant enqueue/s
 ## Security controls
 
 - Enqueue derives `institution_id` and `actor_id` only from the authenticated school session; client-supplied tenant/actor fields are rejected.
-- Enqueue requires the exact institution-scoped `manage_institution` permission. Status reads require `manage_institution` or `view_all_reports`.
-- Every worker claim revalidates active user, active institution, current role assignment and the required permission. Suspension, reassignment or role downgrade fails the job before handler execution.
+- Enqueue requires the exact institution-scoped `manage_institution` permission. Status reads require `manage_institution` or `view_all_reports`. When entitlement enforcement is enabled, both operations also require the current subscription to include each paid resource being queried.
+- Every worker claim, cooperative heartbeat and final result publication revalidates active user, active institution, current role assignment, required permission and the current entitlement for each paid resource. Suspension, reassignment, role downgrade or subscription suspension/expiry fails the job before handler execution or result publication.
 - Job lookup filters by both job ID and authenticated tenant; foreign jobs return the same 404 as missing jobs.
 - Idempotency keys are SHA-256 hashed at rest and unique per institution; reuse with a different canonical request returns 409.
 - Claims use `BEGIN IMMEDIATE`, worker-owned leases and bounded attempts. Expired leases can be reclaimed and stale workers cannot complete a job after losing the lease.
@@ -54,12 +54,28 @@ This is not yet a complete migration history for every table in the original bas
 - Full versioned migration coverage for the entire base schema and future schema changes remains outstanding.
 - Off-site backup/restore, worker metrics/alerts and multi-node queue support remain outstanding.
 
+## Resource entitlement enforcement
+
+When APP_ENV=production or ENFORCE_ENTITLEMENTS=1, tenant health-check jobs
+must hold the active institution subscription entitlement for every selected
+paid resource. The current mapping is classes -> class_management,
+question_banks -> question_bank_analysis, and exam_blueprints -> exam_generation.
+The books count is a baseline diagnostic and has no separate paid feature key
+in the current licensing catalog.
+
+The same check runs during enqueue, before worker execution, on every
+cooperative heartbeat, immediately before a result is committed, and when a
+tenant user reads a job result. An absent, expired, suspended or malformed
+subscription fails closed. API calls return subscription_required; workers
+record authorization_revoked, clear the lease and do not publish a result.
+Development remains usable without seeded plans unless ENFORCE_ENTITLEMENTS=1.
+
 ## Cooperative lease heartbeat
 
 Long-running handlers must call `context.heartbeat()` between bounded stages and
 before/after every external side effect. Each heartbeat revalidates the initiating
-school user's active identity, institution and exact job permission in the same
-transaction that extends the worker lease. If the user, institution or permission
+school user's active identity, institution, exact job permission and resource
+entitlements in the same transaction that extends the worker lease. If the user, institution or permission
 has been suspended, reassigned or revoked, the job is atomically marked failed
 with `authorization_revoked`, its lease is cleared, an append-only failure event
 is recorded, and the heartbeat raises `LeaseLost`. A worker cannot continue
