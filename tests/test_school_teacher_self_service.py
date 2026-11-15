@@ -60,6 +60,16 @@ def teacher_env(tmp_path, monkeypatch):
         password="correct horse battery staple", institution_id=tenant_a,
         role_name="HR/Attendance Officer", granted_by="platform-admin",
     )
+    coordinator_a = identity.create_school_user(
+        conn, email=f"coordinator-a-{suffix}@school.example",
+        password="correct horse battery staple", institution_id=tenant_a,
+        role_name="Academic Coordinator", granted_by="platform-admin",
+    )
+    examiner_a = identity.create_school_user(
+        conn, email=f"examiner-a-{suffix}@school.example",
+        password="correct horse battery staple", institution_id=tenant_a,
+        role_name="Examiner", granted_by="platform-admin",
+    )
     conn.close()
 
     import app as app_module
@@ -74,6 +84,7 @@ def teacher_env(tmp_path, monkeypatch):
         "leave_type_a": leave_type_a, "leave_type_b": leave_type_b,
         "user_a": user_a, "user_b": user_b,
         "admin_a": admin_a, "principal_a": principal_a, "hr_a": hr_a,
+        "coordinator_a": coordinator_a, "examiner_a": examiner_a,
     }
 
 
@@ -511,7 +522,7 @@ def test_teacher_identity_revocation_is_audited_idempotent_and_allows_reassignme
     conn.close()
 
 
-@pytest.mark.parametrize("actor_key", ["principal_a", "hr_a", "user_a"])
+@pytest.mark.parametrize("actor_key", ["principal_a", "hr_a", "coordinator_a", "examiner_a", "user_a"])
 def test_teacher_identity_revocation_requires_manage_users_permission(teacher_env, actor_key):
     e = teacher_env
     client = e["app"].app.test_client()
