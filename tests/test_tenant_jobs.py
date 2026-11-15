@@ -7,6 +7,7 @@ import uuid
 import pytest
 from db import get_connection, init_db
 from services import core, identity
+from services.licensing import change_subscription_status, create_plan, grant_subscription
 from services.tenant_job_handlers import HANDLERS
 from services.tenant_jobs import (RetryableJobError, LeaseLost, _finish_success, claim_next_job, enqueue_job, get_tenant_job, renew_job_lease, run_once)
 
@@ -14,6 +15,7 @@ from services.tenant_jobs import (RetryableJobError, LeaseLost, _finish_success,
 @pytest.fixture
 def job_env(tmp_path, monkeypatch):
     monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("ENFORCE_ENTITLEMENTS", "0")
     monkeypatch.setenv("REQUIRE_API_AUTH", "1")
     monkeypatch.setenv("API_RATE_LIMIT_ENABLED", "0")
     path = str(tmp_path / "tenant-jobs.sqlite")
@@ -54,6 +56,24 @@ def login(client, user):
     assert response.status_code == 302
     with client.session_transaction() as session:
         return session["csrf_token"]
+
+
+def grant_job_features(conn, institution_id, entitlements):
+    suffix = uuid.uuid4().hex[:10]
+    plan_id = create_plan(
+        conn,
+        code="job-entitlement-" + suffix,
+        name="Job entitlement " + suffix,
+        entitlements=entitlements,
+    )
+    return grant_subscription(
+        conn,
+        institution_id=institution_id,
+        plan_id=plan_id,
+        access_type="free_grant",
+        granted_by="test-admin",
+        reason="Automated tenant-job entitlement test",
+    )
 
 
 def enqueue(conn, tenant, user, key, resources=None):
@@ -572,3 +592,151 @@ def test_worker_cli_sigterm_during_idle_poll_prevents_another_claim(monkeypatch,
     assert calls == ["claimed"]
     output = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert output == [{"status": "shutdown"}]
+
+def test_job_enqueue_and_result_read_enforce_resource_entitlements(job_env, monkeypatch):
+    e = job_env
+    monkeypatch.setenv("ENFORCE_ENTITLEMENTS", "1")
+    conn = init_db(e["path"])
+    subscription_id = grant_job_features(
+        conn, e["a"],
+        {
+            "class_management": True,
+            "exam_generation": True,
+            "question_bank_analysis": False,
+        },
+    )
+    conn.close()
+
+    csrf = login(e["client_a"], e["ua"])
+    headers = {"X-CSRF-Token": csrf, "Idempotency-Key": "job-entitlement-read-0001"}
+    denied = e["client_a"].post(
+        "/api/school/jobs", json={"resources": ["question_banks"]}, headers=headers
+    )
+    allowed = e["client_a"].post(
+        "/api/school/jobs", json={"resources": ["classes", "exam_blueprints"]},
+        headers={"X-CSRF-Token": csrf, "Idempotency-Key": "job-entitlement-read-0002"},
+    )
+    assert denied.status_code == 403
+    assert denied.get_json()["error"] == "subscription_required"
+    assert allowed.status_code == 202
+    job_id = allowed.get_json()["id"]
+    assert e["client_a"].get("/api/school/jobs/" + job_id).status_code == 200
+
+    conn = init_db(e["path"])
+    change_subscription_status(
+        conn, subscription_id, status="suspended",
+        actor_id=e["ua"]["id"], reason="Entitlement revoked during test",
+    )
+    conn.close()
+    read_after_suspend = e["client_a"].get("/api/school/jobs/" + job_id)
+    enqueue_after_suspend = e["client_a"].post(
+        "/api/school/jobs", json={"resources": ["classes"]},
+        headers={"X-CSRF-Token": csrf, "Idempotency-Key": "job-entitlement-read-0003"},
+    )
+    assert read_after_suspend.status_code == 403
+    assert read_after_suspend.get_json()["error"] == "subscription_required"
+    assert enqueue_after_suspend.status_code == 403
+    assert enqueue_after_suspend.get_json()["error"] == "subscription_required"
+
+
+def test_worker_fails_queued_job_when_resource_entitlement_is_revoked(job_env, monkeypatch):
+    e = job_env
+    monkeypatch.setenv("ENFORCE_ENTITLEMENTS", "1")
+    conn = init_db(e["path"])
+    subscription_id = grant_job_features(
+        conn, e["a"], {"class_management": True}
+    )
+    job_id, _ = enqueue(
+        conn, e["a"], e["ua"], "job-entitlement-worker-0001", ["classes"]
+    )
+    change_subscription_status(
+        conn, subscription_id, status="suspended",
+        actor_id=e["ua"]["id"], reason="Entitlement revoked before execution",
+    )
+    called = []
+    result = run_once(
+        conn, "worker-entitlement-denied",
+        {"tenant_health_check": lambda *_: called.append(True) or {"ok": True}},
+    )
+    row = conn.execute(
+        "SELECT status, last_error_code, result_json FROM tenant_jobs WHERE id=?",
+        (job_id,),
+    ).fetchone()
+    assert result == {"job_id": job_id, "status": "failed"}
+    assert called == []
+    assert row["status"] == "failed"
+    assert row["last_error_code"] == "authorization_revoked"
+    assert row["result_json"] is None
+    conn.close()
+
+
+def test_worker_heartbeat_stops_when_resource_entitlement_is_revoked(job_env, monkeypatch):
+    e = job_env
+    monkeypatch.setenv("ENFORCE_ENTITLEMENTS", "1")
+    conn = init_db(e["path"])
+    subscription_id = grant_job_features(
+        conn, e["a"], {"class_management": True}
+    )
+    job_id, _ = enqueue(
+        conn, e["a"], e["ua"], "job-entitlement-heartbeat-0001", ["classes"]
+    )
+
+    def revoke_then_heartbeat(_conn, context):
+        change_subscription_status(
+            conn, subscription_id, status="suspended",
+            actor_id=e["ua"]["id"], reason="Entitlement revoked during handler",
+        )
+        context.heartbeat()
+        return {"should_not_be_published": True}
+
+    result = run_once(
+        conn, "worker-entitlement-heartbeat",
+        {"tenant_health_check": revoke_then_heartbeat},
+        lease_seconds=30,
+    )
+    row = conn.execute(
+        """SELECT status, last_error_code, locked_by, lease_expires_at, result_json
+           FROM tenant_jobs WHERE id=?""",
+        (job_id,),
+    ).fetchone()
+    assert result == {"job_id": job_id, "status": "lease_lost"}
+    assert row["status"] == "failed"
+    assert row["last_error_code"] == "authorization_revoked"
+    assert row["locked_by"] is None
+    assert row["lease_expires_at"] is None
+    assert row["result_json"] is None
+    conn.close()
+
+
+def test_worker_rechecks_entitlement_before_publishing_handler_result(job_env, monkeypatch):
+    e = job_env
+    monkeypatch.setenv("ENFORCE_ENTITLEMENTS", "1")
+    conn = init_db(e["path"])
+    subscription_id = grant_job_features(
+        conn, e["a"], {"class_management": True}
+    )
+    job_id, _ = enqueue(
+        conn, e["a"], e["ua"], "job-entitlement-finish-0001", ["classes"]
+    )
+
+    def revoke_without_heartbeat(_conn, _context):
+        change_subscription_status(
+            conn, subscription_id, status="suspended",
+            actor_id=e["ua"]["id"], reason="Entitlement revoked before publish",
+        )
+        return {"should_not_be_published": True}
+
+    result = run_once(
+        conn, "worker-entitlement-finish",
+        {"tenant_health_check": revoke_without_heartbeat},
+    )
+    row = conn.execute(
+        "SELECT status, last_error_code, result_json FROM tenant_jobs WHERE id=?",
+        (job_id,),
+    ).fetchone()
+    assert result == {"job_id": job_id, "status": "lease_lost"}
+    assert row["status"] == "failed"
+    assert row["last_error_code"] == "authorization_revoked"
+    assert row["result_json"] is None
+    conn.close()
+
