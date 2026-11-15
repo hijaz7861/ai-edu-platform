@@ -365,7 +365,7 @@ def revoke_teacher_identity_link(
         raise TeacherIdentityAuthorizationError("active_tenant_identity_required")
     if not isinstance(teacher_id, str) or not teacher_id.strip() or len(teacher_id) > 128:
         raise ValueError("invalid_teacher_id")
-    if reason_code not in _TEACHER_IDENTITY_REVOCATION_REASONS:
+    if not isinstance(reason_code, str) or reason_code not in _TEACHER_IDENTITY_REVOCATION_REASONS:
         raise ValueError("invalid_revocation_reason")
     if (
         not isinstance(idempotency_key, str)
