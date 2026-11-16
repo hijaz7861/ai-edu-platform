@@ -20,6 +20,7 @@ from services.login_throttle import clear_failures, is_locked, record_failure
 from services.api_rate_limit import allow_request
 from services.security_audit import append_security_event
 from providers.base import get_default_registry
+from providers.http import CircuitOpenError
 from dashboard_api import dashboard_api
 
 load_dotenv()
@@ -470,6 +471,11 @@ def generate_question():
 
     try:
         result = provider.generate_question(concept, question_type, difficulty)
+    except CircuitOpenError as exc:
+        app.logger.warning("AI provider circuit is open; request was not sent upstream.")
+        response, status = err("AI provider temporarily unavailable", 503)
+        response.headers["Retry-After"] = str(exc.retry_after)
+        return response, status
     except RuntimeError:
         app.logger.warning("AI question generation failed; provider error details withheld.")
         return err("AI generation failed; check model availability, API quota, and configuration", 502)
