@@ -5,6 +5,7 @@ import urllib.error
 import pytest
 
 from providers.gemini import GeminiProvider
+from providers.http import CircuitOpenError
 
 
 def response_for(payload):
@@ -149,3 +150,54 @@ def test_question_generation_route_uses_explicit_gemini_provider(monkeypatch):
     assert response.status_code == 200
     assert response.get_json()["provider"] == "gemini-native"
     assert response.get_json()["question"]["content"] == "What is gravity?"
+
+
+
+def test_question_generation_route_returns_retry_after_for_open_provider_circuit(monkeypatch):
+    import app as app_module
+
+    class OpenCircuitProvider:
+        name = "gemini-native"
+
+        def generate_question(self, concept, question_type, difficulty):
+            raise CircuitOpenError(17)
+
+    monkeypatch.setenv("AI_PROVIDER", "gemini-native")
+    monkeypatch.setenv("ADMIN_USERNAME", "circuit-route-admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "test-only-password-9284")
+    monkeypatch.setenv("REQUIRE_API_AUTH", "1")
+    monkeypatch.setattr(
+        app_module,
+        "get_default_registry",
+        lambda: {"gemini-native": OpenCircuitProvider()},
+    )
+    app_module.app.config.update(TESTING=True)
+
+    with app_module.app.test_client() as client:
+        client.get("/")
+        with client.session_transaction() as session:
+            csrf = session["csrf_token"]
+        login = client.post(
+            "/auth/login",
+            data={
+                "username": "circuit-route-admin",
+                "password": "test-only-password-9284",
+                "csrf_token": csrf,
+            },
+        )
+        assert login.status_code == 302
+        with client.session_transaction() as session:
+            csrf = session["csrf_token"]
+        response = client.post(
+            "/api/questions/generate",
+            json={
+                "concept": {"name": "gravity"},
+                "question_type": "short_answer",
+                "difficulty": "easy",
+            },
+            headers={"X-CSRF-Token": csrf},
+        )
+
+    assert response.status_code == 503
+    assert response.headers["Retry-After"] == "17"
+    assert response.get_json() == {"error": "AI provider temporarily unavailable"}
