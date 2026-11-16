@@ -201,3 +201,151 @@ def test_question_generation_route_returns_retry_after_for_open_provider_circuit
     assert response.status_code == 503
     assert response.headers["Retry-After"] == "17"
     assert response.get_json() == {"error": "AI provider temporarily unavailable"}
+
+
+
+def _post_question_generation_as_admin(monkeypatch, app_module, registry, *, preferred=None):
+    monkeypatch.setenv("ADMIN_USERNAME", "provider-fallback-admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "test-only-password-9284")
+    monkeypatch.setenv("REQUIRE_API_AUTH", "1")
+    if preferred is None:
+        monkeypatch.delenv("AI_PROVIDER", raising=False)
+    else:
+        monkeypatch.setenv("AI_PROVIDER", preferred)
+    monkeypatch.setattr(app_module, "get_default_registry", lambda: registry)
+    app_module.app.config.update(TESTING=True)
+
+    with app_module.app.test_client() as client:
+        client.get("/")
+        with client.session_transaction() as session:
+            csrf = session["csrf_token"]
+        login = client.post(
+            "/auth/login",
+            data={
+                "username": "provider-fallback-admin",
+                "password": "test-only-password-9284",
+                "csrf_token": csrf,
+            },
+        )
+        assert login.status_code == 302
+        with client.session_transaction() as session:
+            csrf = session["csrf_token"]
+        return client.post(
+            "/api/questions/generate",
+            json={
+                "concept": {"name": "gravity"},
+                "question_type": "short_answer",
+                "difficulty": "easy",
+            },
+            headers={"X-CSRF-Token": csrf},
+        )
+
+
+def test_automatic_provider_selection_falls_back_only_when_circuit_is_open(monkeypatch):
+    import app as app_module
+
+    class OpenCircuitProvider:
+        name = "mistral-agent"
+
+        def __init__(self):
+            self.calls = 0
+
+        def generate_question(self, concept, question_type, difficulty):
+            self.calls += 1
+            raise CircuitOpenError(13)
+
+    class HealthyProvider:
+        name = "gemini-native"
+
+        def __init__(self):
+            self.calls = 0
+
+        def generate_question(self, concept, question_type, difficulty):
+            self.calls += 1
+            return {
+                "content": "What is gravity?",
+                "difficulty": difficulty,
+                "provider": self.name,
+                "verification_status": "ai_generated_unverified",
+            }
+
+    primary = OpenCircuitProvider()
+    fallback = HealthyProvider()
+    response = _post_question_generation_as_admin(
+        monkeypatch,
+        app_module,
+        {"mistral-agent": primary, "gemini-native": fallback},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["provider"] == "gemini-native"
+    assert primary.calls == 1
+    assert fallback.calls == 1
+
+
+def test_explicit_provider_selection_does_not_silently_fallback(monkeypatch):
+    import app as app_module
+
+    class OpenCircuitProvider:
+        name = "mistral-agent"
+
+        def generate_question(self, concept, question_type, difficulty):
+            raise CircuitOpenError(11)
+
+    class HealthyProvider:
+        name = "gemini-native"
+
+        def __init__(self):
+            self.calls = 0
+
+        def generate_question(self, concept, question_type, difficulty):
+            self.calls += 1
+            return {"content": "What is gravity?"}
+
+    fallback = HealthyProvider()
+    response = _post_question_generation_as_admin(
+        monkeypatch,
+        app_module,
+        {
+            "mistral-agent": OpenCircuitProvider(),
+            "gemini-native": fallback,
+        },
+        preferred="mistral-agent",
+    )
+
+    assert response.status_code == 503
+    assert response.headers["Retry-After"] == "11"
+    assert fallback.calls == 0
+
+
+def test_automatic_provider_selection_does_not_mask_non_circuit_errors(monkeypatch):
+    import app as app_module
+
+    class InvalidCredentialsProvider:
+        name = "mistral-agent"
+
+        def generate_question(self, concept, question_type, difficulty):
+            raise RuntimeError("provider returned HTTP 401")
+
+    class HealthyProvider:
+        name = "gemini-native"
+
+        def __init__(self):
+            self.calls = 0
+
+        def generate_question(self, concept, question_type, difficulty):
+            self.calls += 1
+            return {"content": "What is gravity?"}
+
+    fallback = HealthyProvider()
+    response = _post_question_generation_as_admin(
+        monkeypatch,
+        app_module,
+        {
+            "mistral-agent": InvalidCredentialsProvider(),
+            "gemini-native": fallback,
+        },
+    )
+
+    assert response.status_code == 502
+    assert fallback.calls == 0
