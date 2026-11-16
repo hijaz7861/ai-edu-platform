@@ -204,7 +204,9 @@ def test_question_generation_route_returns_retry_after_for_open_provider_circuit
 
 
 
-def _post_question_generation_as_admin(monkeypatch, app_module, registry, *, preferred=None):
+def _post_question_generation_as_admin(
+    monkeypatch, app_module, registry, *, preferred=None, fallback_enabled=False
+):
     monkeypatch.setenv("ADMIN_USERNAME", "provider-fallback-admin")
     monkeypatch.setenv("ADMIN_PASSWORD", "test-only-password-9284")
     monkeypatch.setenv("REQUIRE_API_AUTH", "1")
@@ -212,6 +214,10 @@ def _post_question_generation_as_admin(monkeypatch, app_module, registry, *, pre
         monkeypatch.delenv("AI_PROVIDER", raising=False)
     else:
         monkeypatch.setenv("AI_PROVIDER", preferred)
+    if fallback_enabled:
+        monkeypatch.setenv("AI_PROVIDER_FALLBACK_ENABLED", "1")
+    else:
+        monkeypatch.delenv("AI_PROVIDER_FALLBACK_ENABLED", raising=False)
     monkeypatch.setattr(app_module, "get_default_registry", lambda: registry)
     app_module.app.config.update(TESTING=True)
 
@@ -275,6 +281,7 @@ def test_automatic_provider_selection_falls_back_only_when_circuit_is_open(monke
         monkeypatch,
         app_module,
         {"mistral-agent": primary, "gemini-native": fallback},
+        fallback_enabled=True,
     )
 
     assert response.status_code == 200
@@ -348,4 +355,39 @@ def test_automatic_provider_selection_does_not_mask_non_circuit_errors(monkeypat
     )
 
     assert response.status_code == 502
+    assert fallback.calls == 0
+
+
+
+def test_automatic_provider_fallback_is_disabled_without_explicit_opt_in(monkeypatch):
+    import app as app_module
+
+    class OpenCircuitProvider:
+        name = "mistral-agent"
+
+        def generate_question(self, concept, question_type, difficulty):
+            raise CircuitOpenError(9)
+
+    class HealthyProvider:
+        name = "gemini-native"
+
+        def __init__(self):
+            self.calls = 0
+
+        def generate_question(self, concept, question_type, difficulty):
+            self.calls += 1
+            return {"content": "What is gravity?"}
+
+    fallback = HealthyProvider()
+    response = _post_question_generation_as_admin(
+        monkeypatch,
+        app_module,
+        {
+            "mistral-agent": OpenCircuitProvider(),
+            "gemini-native": fallback,
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.headers["Retry-After"] == "9"
     assert fallback.calls == 0
