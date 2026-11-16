@@ -450,6 +450,12 @@ def generate_question():
 
     registry = get_default_registry()
     preferred_provider = os.environ.get("AI_PROVIDER", "").strip()
+    # Cross-vendor failover can change the processor receiving school data.
+    # It is opt-in and never overrides an explicit provider selection.
+    fallback_enabled = (
+        not preferred_provider
+        and os.environ.get("AI_PROVIDER_FALLBACK_ENABLED", "0") == "1"
+    )
     if preferred_provider:
         selected = registry.get(preferred_provider)
         if selected is None:
@@ -479,7 +485,7 @@ def generate_question():
             circuit_retry_afters.append(exc.retry_after)
             # An explicit AI_PROVIDER selection is an operator decision; do not
             # silently send prompts to a different configured provider.
-            if preferred_provider:
+            if not fallback_enabled:
                 break
             continue
         except RuntimeError:
