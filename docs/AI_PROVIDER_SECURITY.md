@@ -22,6 +22,15 @@ The limits are intentionally conservative defaults in `providers/http.py`; adjus
 
 Tests cover open, half-open, recovery, permanent-error handling, host isolation, API `Retry-After`, opt-in automatic fallback on an open circuit, fallback-disabled-by-default, explicit-provider pinning and refusal to mask non-circuit errors. They use mocked upstream responses; no live provider credentials or paid requests are used.
 
+## Response-body circuit accounting
+
+The provider circuit remains open until the bounded response body has been read.
+A connection that succeeds at the HTTP-header stage but resets or times out while
+streaming its body counts as a transient failure. A complete but malformed or
+oversized response releases a half-open probe as a reachable-upstream protocol
+error; it does not masquerade as a transport outage. This is still process-local
+state and does not coordinate separate worker processes.
+
 ## Still required before production
 
 This transport hardening is not a provider quota or spend-control system. Per-institution daily/monthly usage budgets, token/currency accounting, provider-side spend caps, distributed circuit state, secret rotation, live provider contract tests, staging credentials and operational cost alerts remain outstanding. Real provider credentials were not used by these tests.
