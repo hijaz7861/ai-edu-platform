@@ -243,6 +243,98 @@ def test_failed_half_open_probe_reopens_provider_circuit(monkeypatch):
     assert attempts["count"] == 6
 
 
+
+def test_response_body_read_failures_count_toward_provider_circuit(monkeypatch):
+    attempts = {"count": 0}
+    request = _request()
+
+    class FailingBodyResponse:
+        headers = {}
+
+        def read(self, size=-1):
+            raise OSError("simulated connection reset")
+
+    class FailingBodyOpener:
+        def open(self, request, timeout):
+            attempts["count"] += 1
+            return FailingBodyResponse()
+
+    monkeypatch.setattr(
+        "urllib.request.build_opener", lambda handler: FailingBodyOpener()
+    )
+    for _ in range(5):
+        response = open_provider_request(request, timeout=1)
+        with pytest.raises(RuntimeError, match="response read failed"):
+            read_provider_json(response, "test")
+
+    with pytest.raises(CircuitOpenError):
+        open_provider_request(request, timeout=1)
+
+    assert attempts["count"] == 5
+
+
+def test_failed_half_open_body_read_reopens_provider_circuit(monkeypatch):
+    now = {"value": 300.0}
+    monkeypatch.setattr("providers.http.time.monotonic", lambda: now["value"])
+    attempts = {"count": 0}
+    request = _request()
+
+    class FailingBodyResponse:
+        headers = {}
+
+        def read(self, size=-1):
+            raise TimeoutError("simulated response-body timeout")
+
+    class MixedOpener:
+        def open(self, request, timeout):
+            attempts["count"] += 1
+            if attempts["count"] <= 5:
+                raise _http_error(request, 503)
+            return FailingBodyResponse()
+
+    monkeypatch.setattr("urllib.request.build_opener", lambda handler: MixedOpener())
+    for _ in range(5):
+        with pytest.raises(urllib.error.HTTPError):
+            open_provider_request(request, timeout=1)
+
+    now["value"] += CIRCUIT_RESET_SECONDS + 1
+    response = open_provider_request(request, timeout=1)
+    with pytest.raises(RuntimeError, match="response read failed"):
+        read_provider_json(response, "test")
+
+    with pytest.raises(CircuitOpenError):
+        open_provider_request(request, timeout=1)
+
+    assert attempts["count"] == 6
+
+
+def test_malformed_body_releases_half_open_probe_without_opening_circuit(monkeypatch):
+    now = {"value": 400.0}
+    monkeypatch.setattr("providers.http.time.monotonic", lambda: now["value"])
+    attempts = {"count": 0}
+    request = _request()
+
+    class RecoveringOpener:
+        def open(self, request, timeout):
+            attempts["count"] += 1
+            if attempts["count"] <= 5:
+                raise _http_error(request, 503)
+            return FakeResponse(b"not-json" if attempts["count"] == 6 else b"{}")
+
+    monkeypatch.setattr("urllib.request.build_opener", lambda handler: RecoveringOpener())
+    for _ in range(5):
+        with pytest.raises(urllib.error.HTTPError):
+            open_provider_request(request, timeout=1)
+
+    now["value"] += CIRCUIT_RESET_SECONDS + 1
+    malformed = open_provider_request(request, timeout=1)
+    with pytest.raises(RuntimeError, match="invalid JSON"):
+        read_provider_json(malformed, "test")
+
+    recovered = open_provider_request(request, timeout=1)
+    assert read_provider_json(recovered, "test") == {}
+    assert attempts["count"] == 7
+
 def test_openai_compatible_adapter_uses_bounded_transport(monkeypatch):
     from providers.base import OpenAICompatibleProvider
 
