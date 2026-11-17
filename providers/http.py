@@ -6,6 +6,7 @@ distributed breaker or a substitute for provider-side spend limits.
 """
 from __future__ import annotations
 
+import http.client
 import json
 import math
 import threading
@@ -166,12 +167,30 @@ def open_provider_request(request, *, timeout: int):
         # occurs; such errors must not poison upstream availability state.
         _record_circuit_success(key)
         raise
-    _record_circuit_success(key)
+    # A successful TCP/HTTP response is not yet a successful provider call:
+    # the body can still time out or reset while it is being read. Defer circuit
+    # success until read_provider_json has consumed the bounded response body.
+    try:
+        response._ai_provider_circuit_key = key
+    except (AttributeError, TypeError):
+        # Unusual response implementations without writable attributes cannot
+        # carry tracking metadata; release a possible half-open probe safely.
+        _record_circuit_success(key)
     return response
 
 
 def read_provider_json(response, provider_name: str) -> dict:
-    """Read at most 1 MiB and accept only a UTF-8 JSON object."""
+    """Read a bounded UTF-8 JSON object and account for response-body failures."""
+    circuit_key = getattr(response, "_ai_provider_circuit_key", None)
+
+    def mark_success():
+        if circuit_key is not None:
+            _record_circuit_success(circuit_key)
+
+    def mark_failure():
+        if circuit_key is not None:
+            _record_circuit_failure(circuit_key)
+
     headers = getattr(response, "headers", None)
     content_length = headers.get("Content-Length") if headers is not None else None
     if content_length:
@@ -180,9 +199,24 @@ def read_provider_json(response, provider_name: str) -> dict:
         except (TypeError, ValueError):
             declared_length = None
         if declared_length is not None and declared_length > MAX_PROVIDER_RESPONSE_BYTES:
+            # The upstream responded, but violated the response-size contract.
+            mark_success()
             raise RuntimeError(f"{provider_name} provider response exceeds size limit")
 
-    raw = response.read(MAX_PROVIDER_RESPONSE_BYTES + 1)
+    try:
+        raw = response.read(MAX_PROVIDER_RESPONSE_BYTES + 1)
+    except (OSError, TimeoutError, urllib.error.URLError, http.client.HTTPException):
+        mark_failure()
+        raise RuntimeError(f"{provider_name} provider response read failed") from None
+    except Exception:
+        # A local response-wrapper/programming error is not evidence of an
+        # upstream outage, but must release a half-open probe.
+        mark_success()
+        raise
+
+    # The complete bounded body arrived. Malformed/oversized JSON is a provider
+    # protocol error, not a transport outage, so it must release half-open state.
+    mark_success()
     if not isinstance(raw, (bytes, bytearray)) or len(raw) > MAX_PROVIDER_RESPONSE_BYTES:
         raise RuntimeError(f"{provider_name} provider response exceeds size limit")
     try:
