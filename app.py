@@ -210,6 +210,39 @@ _SCHOOL_API_ROUTE_METHODS = frozenset({
     ("school_get_job", "GET"),
 })
 
+# Each school endpoint/method has an explicit any-of institution permission rule.
+# An empty set means an active institution identity is sufficient (the caller
+# may read only its own profile). Domain handlers still enforce resource
+# ownership, feature entitlements and transaction-level authorization.
+_SCHOOL_ROUTE_PERMISSION_REQUIREMENTS = {
+    ("school_me", "GET"): frozenset(),
+    ("school_teacher_me", "GET"): frozenset({"view_own_records"}),
+    ("school_teacher_attendance", "GET"): frozenset({"self_attendance"}),
+    ("school_teacher_create_attendance_event", "POST"): frozenset({"self_attendance"}),
+    ("school_teacher_leave_requests", "GET"): frozenset({"self_leave_request"}),
+    ("school_teacher_create_leave_request", "POST"): frozenset({"self_leave_request"}),
+    ("school_revoke_teacher_identity", "POST"): frozenset({"manage_users"}),
+    ("school_classes", "GET"): frozenset({"manage_institution", "view_all_reports", "manage_curriculum"}),
+    ("school_create_class", "POST"): frozenset({"manage_institution"}),
+    ("school_question_banks", "GET"): frozenset({"manage_institution", "manage_curriculum", "verify_questions"}),
+    ("school_exam_blueprints", "GET"): frozenset({"manage_institution", "manage_curriculum", "publish_exam"}),
+    ("school_attendance", "GET"): frozenset({"manage_institution", "view_all_reports", "manage_attendance_policy"}),
+    ("school_create_attendance_event", "POST"): frozenset({"manage_institution", "manage_attendance_policy"}),
+    ("school_leave_requests", "GET"): frozenset({"manage_institution", "approve_leave", "view_all_reports"}),
+    ("school_create_leave_request", "POST"): frozenset({"manage_institution", "approve_leave", "manage_attendance_policy"}),
+    ("school_decide_leave_approval", "POST"): frozenset({"approve_leave"}),
+    ("school_create_job", "POST"): frozenset({"manage_institution"}),
+    ("school_get_job", "GET"): frozenset({"manage_institution", "view_all_reports"}),
+}
+
+
+def _school_route_permission_allowed(endpoint, method, permissions):
+    """Fail closed unless this exact school route/method has a satisfied rule."""
+    required = _SCHOOL_ROUTE_PERMISSION_REQUIREMENTS.get((endpoint, method))
+    if required is None or not isinstance(permissions, (set, frozenset)):
+        return False
+    return not required or "*" in permissions or not required.isdisjoint(permissions)
+
 
 # Every registered route is classified by endpoint and HTTP method. Legacy
 # business APIs intentionally remain platform-admin-only until they receive
@@ -356,6 +389,18 @@ def enforce_api_security():
                 return jsonify({"error": "school_identity_inactive"}), 401
             if request.method in {"POST", "PUT", "PATCH", "DELETE"} and not _valid_csrf():
                 return jsonify({"error": "csrf_invalid"}), 400
+            # Apply the central per-route permission matrix before the handler.
+            # Sensitive write services still revalidate identity/permission in
+            # their own transaction to close request-to-write revocation races.
+            permissions = identity.institution_permissions(
+                get_db(),
+                user_id=session.get("user_id"),
+                institution_id=session.get("institution_id"),
+            )
+            if not _school_route_permission_allowed(
+                request.endpoint, request.method, permissions
+            ):
+                return jsonify({"error": "permission_denied"}), 403
             return None
         if is_public_route:
             return None
