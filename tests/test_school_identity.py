@@ -642,3 +642,96 @@ def test_school_attendance_excludes_event_with_foreign_tenant_teacher(school_app
     rows = response.get_json()["attendance_events"]
     assert [row["id"] for row in rows] == [event_a]
     assert event_b not in {row["id"] for row in rows}
+
+
+def test_school_class_creation_revalidates_permission_after_middleware(school_app, monkeypatch):
+    client = school_app["client"]
+    _login(client, school_app["user"])
+    with client.session_transaction() as session:
+        csrf_token = session["csrf_token"]
+    original = school_app["app"]._require_feature_access
+    calls = {"count": 0}
+
+    def revoke_role_after_middleware(institution_id, feature):
+        calls["count"] += 1
+        conn = init_db(school_app["db_path"])
+        conn.execute(
+            "DELETE FROM role_assignments WHERE user_id = ?",
+            (school_app["user"]["id"],),
+        )
+        conn.commit()
+        conn.close()
+        return original(institution_id, feature)
+
+    # The middleware has already evaluated the role when this route-level
+    # hook runs. The service must reject the now-revoked identity in its
+    # BEGIN IMMEDIATE transaction instead of trusting that stale decision.
+    monkeypatch.setattr(
+        school_app["app"], "_require_feature_access", revoke_role_after_middleware
+    )
+    response = client.post(
+        "/api/school/classes",
+        json={"name": "Must not be created", "academic_year": "2026-2027"},
+        headers={"X-CSRF-Token": csrf_token},
+    )
+    assert calls["count"] == 1
+    assert response.status_code == 403
+    assert response.get_json() == {"error": "permission_denied"}
+
+    conn = init_db(school_app["db_path"])
+    assert conn.execute(
+        "SELECT COUNT(*) FROM classes WHERE institution_id = ? AND name = 'Must not be created'",
+        (school_app["institution_a"],),
+    ).fetchone()[0] == 0
+    conn.close()
+
+
+def test_school_class_creation_rolls_back_default_campus_when_audit_fails(
+    school_app,
+):
+    conn = init_db(school_app["db_path"])
+    conn.execute(
+        "DELETE FROM classes WHERE institution_id = ?",
+        (school_app["institution_a"],),
+    )
+    conn.execute(
+        "DELETE FROM campuses WHERE institution_id = ?",
+        (school_app["institution_a"],),
+    )
+    conn.execute(
+        """CREATE TRIGGER reject_school_class_audit
+           BEFORE INSERT ON audit_log
+           WHEN NEW.action_type = 'school_class_created'
+           BEGIN
+               SELECT RAISE(ABORT, 'simulated audit storage failure');
+           END"""
+    )
+    conn.commit()
+    conn.close()
+
+    client = school_app["client"]
+    _login(client, school_app["user"])
+    with client.session_transaction() as session:
+        csrf_token = session["csrf_token"]
+    response = client.post(
+        "/api/school/classes",
+        json={"name": "Atomic class", "academic_year": "2026-2027"},
+        headers={"X-CSRF-Token": csrf_token},
+    )
+    assert response.status_code == 500
+    assert response.get_json() == {"error": "school_class_creation_failed"}
+
+    conn = init_db(school_app["db_path"])
+    assert conn.execute(
+        "SELECT COUNT(*) FROM campuses WHERE institution_id = ?",
+        (school_app["institution_a"],),
+    ).fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM classes WHERE institution_id = ?",
+        (school_app["institution_a"],),
+    ).fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM audit_log WHERE institution_id = ? AND action_type = 'school_class_created'",
+        (school_app["institution_a"],),
+    ).fetchone()[0] == 0
+    conn.close()
