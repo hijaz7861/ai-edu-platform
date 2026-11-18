@@ -649,25 +649,30 @@ def test_school_class_creation_revalidates_permission_after_middleware(school_ap
     _login(client, school_app["user"])
     with client.session_transaction() as session:
         csrf_token = session["csrf_token"]
-    original = school_app["app"]._require_feature_access
+    original = school_app["app"].identity.institution_permissions
     calls = {"count": 0}
 
-    def revoke_role_after_middleware(institution_id, feature):
-        calls["count"] += 1
-        conn = init_db(school_app["db_path"])
-        conn.execute(
-            "DELETE FROM role_assignments WHERE user_id = ?",
-            (school_app["user"]["id"],),
+    def revoke_role_after_middleware(conn, *, user_id, institution_id):
+        permissions = original(
+            conn, user_id=user_id, institution_id=institution_id
         )
-        conn.commit()
-        conn.close()
-        return original(institution_id, feature)
+        calls["count"] += 1
+        if calls["count"] == 1:
+            # Revoke the role after middleware has resolved the permission
+            # snapshot but before the view's write service begins its transaction.
+            revoker = init_db(school_app["db_path"])
+            revoker.execute(
+                "DELETE FROM role_assignments WHERE user_id = ?",
+                (school_app["user"]["id"],),
+            )
+            revoker.commit()
+            revoker.close()
+        return permissions
 
-    # The middleware has already evaluated the role when this route-level
-    # hook runs. The service must reject the now-revoked identity in its
-    # BEGIN IMMEDIATE transaction instead of trusting that stale decision.
     monkeypatch.setattr(
-        school_app["app"], "_require_feature_access", revoke_role_after_middleware
+        school_app["app"].identity,
+        "institution_permissions",
+        revoke_role_after_middleware,
     )
     response = client.post(
         "/api/school/classes",
