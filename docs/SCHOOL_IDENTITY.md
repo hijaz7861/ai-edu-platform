@@ -29,7 +29,7 @@ X-CSRF-Token: <session-csrf-token>
 
 ## Remaining limitations — not launch-ready by itself
 
-This is a bounded first implementation, not a claim of complete production identity management. Password recovery, invitation/verification emails, MFA, account lockout policy review, session revocation/versioning, institution-admin user management UI, class/department role enforcement, route-by-route permission mapping for institution roles, and tenant-scoped authorization for future school-facing legacy APIs remain outstanding. The regression suite now enumerates every registered Flask route and dashboard blueprint method and denies school-session access outside the explicit school/public allowlist; this is a boundary test, not proof that every platform-admin data query is institution-scoped. Existing legacy APIs continue to be platform-admin-only; they must not be exposed to school sessions until each route has explicit tenant and permission checks. A real production launch still requires full regression CI, deployment-specific secrets, database/backups/restore drills, monitoring, and live staging verification.
+This is a bounded first implementation, not a claim of complete production identity management. The 18 currently exposed school route/method pairs now have a centralized, fail-closed any-of permission registry enforced by middleware and an integration matrix across all six supported institution roles. Password recovery, invitation/verification emails, MFA, account lockout policy review, session revocation/versioning, institution-admin user management UI, class/department role enforcement, and tenant-scoped authorization for future school-facing legacy APIs remain outstanding. The regression suite now enumerates every registered Flask route and dashboard blueprint method and denies school-session access outside the explicit school/public allowlist; this is a boundary test, not proof that every platform-admin data query is institution-scoped. Existing legacy APIs continue to be platform-admin-only; they must not be exposed to school sessions until each route has explicit tenant and permission checks. A real production launch still requires full regression CI, deployment-specific secrets, database/backups/restore drills, monitoring, and live staging verification.
 
 ## Current school API permission matrix
 
@@ -54,6 +54,8 @@ and the `attendance` entitlement. Leave-request reads require
 | Examiner | Yes | No | No | Yes | Yes | No | No | No | No | No | No | No |
 | HR/Attendance Officer | Yes | No | No | No | No | Yes | Yes | Yes | Yes | No | No | No |
 | Teacher Portal | Yes | No | No | No | No | No | No | No | No | No | No | No |
+
+The permission matrix is enforced centrally by `_SCHOOL_ROUTE_PERMISSION_REQUIREMENTS` in `app.py`, keyed by the exact Flask endpoint and HTTP method. The middleware resolves permissions only from the active institution-scoped database assignments; it never accepts role or permission claims from request data. The route audit test requires exact coverage between the method allowlist and permission registry, checks the seeded-role matrix, and exercises all 18 route/method pairs under each of the six supported school roles. Domain handlers continue to enforce teacher-link ownership, tenant resource joins, feature entitlements and transactional checks for sensitive writes.
 
 This is not a blanket permission for future endpoints. New routes and methods
 remain denied until explicitly added to the exact route allowlist and covered
