@@ -35,6 +35,11 @@ from services.tenant_attendance import (
     AttendanceEntitlementError, AttendanceResourceNotFound,
     AttendanceIdempotencyConflict, AttendanceSequenceConflict,
 )
+from services.tenant_classes import (
+    create_school_class, SchoolClassAuthorizationError,
+    SchoolClassEntitlementError, SchoolClassCampusNotFound,
+    SchoolClassPersistenceError,
+)
 from providers.base import get_default_registry
 from dashboard_api import dashboard_api
 
@@ -582,48 +587,54 @@ def school_me():
 @app.post("/api/school/classes")
 def school_create_class():
     institution_id = session["institution_id"]
-    access_error = _require_feature_access(institution_id, "class_management")
-    if access_error:
-        return access_error
-    permissions = identity.institution_permissions(
-        get_db(), user_id=session["user_id"], institution_id=institution_id
-    )
-    if not ({"*", "manage_institution"} & permissions):
-        return err("permission_denied", 403)
+    body = request.get_json(silent=True)
+    if body is None:
+        if request.data:
+            return err("invalid_json", 400)
+        body = {}
+    if not isinstance(body, dict) or set(body) - {"name", "academic_year", "campus_id"}:
+        return err("unsupported_payload", 400)
 
-    body = request.get_json(silent=True) or {}
     name = body.get("name")
     if not isinstance(name, str) or not name.strip() or len(name.strip()) > 200:
         return err("class_name_required", 400)
     academic_year = body.get("academic_year", "2026-2027")
-    if not isinstance(academic_year, str) or not academic_year.strip() or len(academic_year) > 40:
+    if (
+        not isinstance(academic_year, str)
+        or not academic_year.strip()
+        or len(academic_year) > 40
+    ):
         return err("invalid_academic_year", 400)
 
-    conn = get_db()
-    campus_id = body.get("campus_id")
-    if campus_id is not None:
-        campus = conn.execute(
-            "SELECT id FROM campuses WHERE id = ? AND institution_id = ? AND status = 'active'",
-            (campus_id, institution_id),
-        ).fetchone()
-        if campus is None:
-            return err("campus_not_in_institution", 400)
-    else:
-        campus = conn.execute(
-            "SELECT id FROM campuses WHERE institution_id = ? AND status = 'active' ORDER BY rowid LIMIT 1",
-            (institution_id,),
-        ).fetchone()
-        if campus is None:
-            campus_id = core.create_campus(
-                conn, institution_id, "Main Campus", "MAIN-" + institution_id[:8]
-            )
-        else:
-            campus_id = campus["id"]
+    try:
+        class_id, campus_id = create_school_class(
+            get_db(),
+            institution_id=institution_id,
+            actor_id=session["user_id"],
+            name=name,
+            academic_year=academic_year,
+            campus_id=body.get("campus_id"),
+        )
+    except SchoolClassAuthorizationError:
+        return err("permission_denied", 403)
+    except SchoolClassEntitlementError:
+        return err("subscription_required", 403)
+    except SchoolClassCampusNotFound:
+        return err("campus_not_in_institution", 400)
+    except ValueError as exc:
+        return err(str(exc), 400)
+    except SchoolClassPersistenceError:
+        app.logger.exception("Failed to persist tenant-bound school class")
+        return err("school_class_creation_failed", 500)
+    except Exception:
+        app.logger.exception("Failed to create tenant-bound school class")
+        return err("school_class_creation_failed", 500)
 
-    class_id = core.create_class(
-        conn, institution_id, campus_id, name.strip(), academic_year.strip()
-    )
-    return jsonify({"id": class_id, "institution_id": institution_id, "name": name.strip()}), 201
+    return jsonify({
+        "id": class_id,
+        "institution_id": institution_id,
+        "name": name.strip(),
+    }), 201
 
 
 @app.get("/api/school/classes")
