@@ -34,3 +34,44 @@ state and does not coordinate separate worker processes.
 ## Still required before production
 
 This transport hardening is not a provider quota or spend-control system. Per-institution daily/monthly usage budgets, token/currency accounting, provider-side spend caps, distributed circuit state, secret rotation, live provider contract tests, staging credentials and operational cost alerts remain outstanding. Real provider credentials were not used by these tests.
+
+
+## Provider-reported token usage contract
+
+The three configured adapters now expose `generate_question_with_usage(...)`,
+which returns a pair: the unchanged question payload and a separate normalized
+usage record. The legacy `generate_question(...)` method remains compatible
+and returns only the question.
+
+- Gemini maps `usageMetadata.promptTokenCount`, `candidatesTokenCount`, and
+  `totalTokenCount`.
+- OpenAI-compatible Chat Completions maps `usage.prompt_tokens`,
+  `completion_tokens`, and `total_tokens`.
+- Mistral Agent Conversations maps `usage.prompt_tokens`,
+  `completion_tokens`, and `total_tokens`.
+- Only non-negative JSON integers within SQLite's signed 64-bit range are
+  accepted. Booleans, floats, negative values, overflow, and inconsistent
+  totals are marked `invalid`.
+- A complete input/output/total triplet is `reported`; incomplete metadata is
+  `partial`; missing metadata is `unreported`. Missing values are never
+  estimated or treated as zero.
+- A provider total greater than input plus output is preserved as
+  `unclassified_tokens` because providers may include reasoning, tool, or
+  connector tokens. Pricing and currency are intentionally absent.
+
+The normalized record contains only a schema version, provider, configured
+model (when known), status and bounded token counts. Raw upstream usage objects,
+prompts, credentials, request IDs and pricing are not copied. Usage is returned
+separately from generated question content and is not injected into the public
+question payload.
+
+This is an adapter-level capture contract only. The API route does not yet
+persist these records, enforce currency budgets, or reserve spend before a
+provider call. The offline stub and providers that do not report usage remain
+explicitly `unreported`; no token or cost estimate may be inferred from text
+length or request counts.
+
+The field mappings follow the provider API references:
+- [Gemini GenerateContent response usage metadata](https://ai.google.dev/api/generate-content)
+- [OpenAI Chat Completions usage](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)
+- [Mistral Beta Conversations usage](https://docs.mistral.ai/api/endpoint/beta/conversations)
