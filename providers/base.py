@@ -12,6 +12,7 @@ from abc import ABC, abstractmethod
 import os
 
 from providers.http import encode_provider_payload, open_provider_request, read_provider_json
+from providers.usage import normalize_provider_usage
 
 
 class AIProvider(ABC):
@@ -21,6 +22,11 @@ class AIProvider(ABC):
     @abstractmethod
     def generate_question(self, concept: dict, question_type: str, difficulty: str) -> dict:
         ...
+
+    def generate_question_with_usage(self, concept: dict, question_type: str, difficulty: str):
+        """Return (question, normalized usage); legacy providers remain unreported."""
+        question = self.generate_question(concept, question_type, difficulty)
+        return question, normalize_provider_usage(None, provider=self.name)
 
     @abstractmethod
     def verify_question(self, question: dict) -> dict:
@@ -138,7 +144,7 @@ class OpenAICompatibleProvider(AIProvider):
     def health_check(self):
         return "available" if self.api_key and self.model and self.base_url.startswith("https://") else "not_configured"
 
-    def _complete_json(self, instruction, payload):
+    def _complete_json(self, instruction, payload, *, include_usage=False):
         import json
         import urllib.error
         import urllib.request
@@ -163,7 +169,6 @@ class OpenAICompatibleProvider(AIProvider):
             with open_provider_request(req, timeout=self.timeout) as response:
                 data = read_provider_json(response, "AI")
         except urllib.error.HTTPError as exc:
-            # Do not include request headers or credentials in errors.
             raise RuntimeError("AI provider returned HTTP " + str(exc.code)) from None
         except (urllib.error.URLError, TimeoutError) as exc:
             raise RuntimeError("AI provider connection failed: " + type(exc).__name__) from None
@@ -174,9 +179,17 @@ class OpenAICompatibleProvider(AIProvider):
             raise RuntimeError("AI provider returned an invalid JSON response") from None
         if not isinstance(result, dict):
             raise RuntimeError("AI provider response must be a JSON object")
+        if include_usage:
+            return result, data.get("usage")
         return result
 
     def generate_question(self, concept, question_type, difficulty):
+        question, _usage = self.generate_question_with_usage(
+            concept, question_type, difficulty
+        )
+        return question
+
+    def generate_question_with_usage(self, concept, question_type, difficulty):
         type_instructions = {
             "definition": (
                 "Create a definition question. The content must ask the learner to define "
@@ -202,9 +215,10 @@ class OpenAICompatibleProvider(AIProvider):
             + " Return a JSON object with content, difficulty, answer, explanation, and "
             "choices when applicable. Keep the requested question type."
         )
-        result = self._complete_json(
+        result, raw_usage = self._complete_json(
             instruction,
             {"concept": concept, "question_type": question_type, "difficulty": difficulty},
+            include_usage=True,
         )
         content = result.get("content")
         if not isinstance(content, str) or not content.strip():
@@ -213,7 +227,10 @@ class OpenAICompatibleProvider(AIProvider):
         result["difficulty"] = difficulty
         result["verification_status"] = "ai_generated_unverified"
         result["provider"] = self.name
-        return result
+        usage = normalize_provider_usage(
+            raw_usage, provider=self.name, model=self.model
+        )
+        return result, usage
 
     def verify_question(self, question):
         result = self._complete_json(
