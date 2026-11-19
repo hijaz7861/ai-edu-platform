@@ -6,6 +6,7 @@ import urllib.error
 import urllib.request
 
 from providers.http import encode_provider_payload, open_provider_request, read_provider_json
+from providers.usage import normalize_provider_usage
 
 
 class MistralAgentProvider:
@@ -35,7 +36,7 @@ class MistralAgentProvider:
             return "configured"
         return "not_configured"
 
-    def _ask(self, instruction, payload):
+    def _ask(self, instruction, payload, *, include_usage=False):
         if not self.api_key or not self.agent_id:
             raise RuntimeError("Mistral Agent is not configured")
 
@@ -137,10 +138,18 @@ class MistralAgentProvider:
                 "Mistral Agent response must be a JSON object"
             )
 
+        if include_usage:
+            return result, data.get("usage")
         return result
 
     def generate_question(self, concept, question_type, difficulty):
-        result = self._ask(
+        question, _usage = self.generate_question_with_usage(
+            concept, question_type, difficulty
+        )
+        return question
+
+    def generate_question_with_usage(self, concept, question_type, difficulty):
+        result, raw_usage = self._ask(
             "Create one educational question. The question type is "
             + question_type
             + ". Difficulty is "
@@ -152,19 +161,19 @@ class MistralAgentProvider:
                 "question_type": question_type,
                 "difficulty": difficulty,
             },
+            include_usage=True,
         )
-
         content = result.get("content")
         if not isinstance(content, str) or not content.strip():
-            raise RuntimeError(
-                "Mistral Agent returned an empty question"
-            )
-
+            raise RuntimeError("Mistral Agent returned an empty question")
         result["content"] = content.strip()
         result["difficulty"] = difficulty
         result["verification_status"] = "ai_generated_unverified"
         result["provider"] = self.name
-        return result
+        usage = normalize_provider_usage(
+            raw_usage, provider=self.name, model=None
+        )
+        return result, usage
 
     def verify_question(self, question):
         result = self._ask(
