@@ -5,6 +5,9 @@ import os
 import urllib.error
 import urllib.request
 
+from providers.http import encode_provider_payload, open_provider_request, read_provider_json
+from providers.usage import normalize_provider_usage
+
 
 class MistralAgentProvider:
     name = "mistral-agent"
@@ -33,7 +36,7 @@ class MistralAgentProvider:
             return "configured"
         return "not_configured"
 
-    def _ask(self, instruction, payload):
+    def _ask(self, instruction, payload, *, include_usage=False):
         if not self.api_key or not self.agent_id:
             raise RuntimeError("Mistral Agent is not configured")
 
@@ -45,10 +48,10 @@ class MistralAgentProvider:
             + json.dumps(payload, ensure_ascii=False)
         )
 
-        body = json.dumps({
+        body = encode_provider_payload({
             "agent_id": self.agent_id,
             "inputs": prompt,
-        }).encode("utf-8")
+        }, "Mistral Agent")
 
         req = urllib.request.Request(
             "https://api.mistral.ai/v1/conversations",
@@ -61,15 +64,13 @@ class MistralAgentProvider:
         )
 
         try:
-            with urllib.request.urlopen(
-                req, timeout=self.timeout
-            ) as response:
-                data = json.loads(response.read().decode("utf-8"))
+            with open_provider_request(req, timeout=self.timeout) as response:
+                data = read_provider_json(response, "Mistral Agent")
         except urllib.error.HTTPError as exc:
             raise RuntimeError(
                 "Mistral Agent returned HTTP " + str(exc.code)
             ) from None
-        except (urllib.error.URLError, TimeoutError) as exc:
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
             raise RuntimeError(
                 "Mistral Agent connection failed: "
                 + type(exc).__name__
@@ -137,10 +138,18 @@ class MistralAgentProvider:
                 "Mistral Agent response must be a JSON object"
             )
 
+        if include_usage:
+            return result, data.get("usage")
         return result
 
     def generate_question(self, concept, question_type, difficulty):
-        result = self._ask(
+        question, _usage = self.generate_question_with_usage(
+            concept, question_type, difficulty
+        )
+        return question
+
+    def generate_question_with_usage(self, concept, question_type, difficulty):
+        result, raw_usage = self._ask(
             "Create one educational question. The question type is "
             + question_type
             + ". Difficulty is "
@@ -152,19 +161,19 @@ class MistralAgentProvider:
                 "question_type": question_type,
                 "difficulty": difficulty,
             },
+            include_usage=True,
         )
-
         content = result.get("content")
         if not isinstance(content, str) or not content.strip():
-            raise RuntimeError(
-                "Mistral Agent returned an empty question"
-            )
-
+            raise RuntimeError("Mistral Agent returned an empty question")
         result["content"] = content.strip()
         result["difficulty"] = difficulty
         result["verification_status"] = "ai_generated_unverified"
         result["provider"] = self.name
-        return result
+        usage = normalize_provider_usage(
+            raw_usage, provider=self.name, model=None
+        )
+        return result, usage
 
     def verify_question(self, question):
         result = self._ask(

@@ -12,6 +12,8 @@ import urllib.parse
 import urllib.request
 
 from providers.base import AIProvider
+from providers.http import encode_provider_payload, open_provider_request, read_provider_json
+from providers.usage import normalize_provider_usage
 
 
 class GeminiProvider(AIProvider):
@@ -28,7 +30,7 @@ class GeminiProvider(AIProvider):
     def health_check(self):
         return "available" if self.api_key and self.model else "not_configured"
 
-    def _generate_json(self, instruction, payload):
+    def _generate_json(self, instruction, payload, *, include_usage=False):
         if not self.api_key:
             raise RuntimeError("GEMINI_API_KEY is not configured")
         if not self.model or any(ch in self.model for ch in "/?#"):
@@ -40,13 +42,13 @@ class GeminiProvider(AIProvider):
             + ":generateContent"
         )
         prompt = instruction + "\nReturn only one valid JSON object. Input:\n" + json.dumps(payload, ensure_ascii=False)
-        body = json.dumps({
+        body = encode_provider_payload({
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
             "generationConfig": {
                 "temperature": 0.2,
                 "responseMimeType": "application/json",
             },
-        }).encode("utf-8")
+        }, "Gemini")
         request = urllib.request.Request(
             endpoint,
             data=body,
@@ -57,8 +59,8 @@ class GeminiProvider(AIProvider):
             },
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                data = json.loads(response.read().decode("utf-8"))
+            with open_provider_request(request, timeout=self.timeout) as response:
+                data = read_provider_json(response, "Gemini")
         except urllib.error.HTTPError as exc:
             raise RuntimeError("Gemini provider returned HTTP " + str(exc.code)) from None
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
@@ -71,19 +73,28 @@ class GeminiProvider(AIProvider):
             raise RuntimeError("Gemini provider returned an invalid JSON response") from None
         if not isinstance(result, dict):
             raise RuntimeError("Gemini provider response must be a JSON object")
+        if include_usage:
+            return result, data.get("usageMetadata")
         return result
 
     def generate_question(self, concept, question_type, difficulty):
+        question, _usage = self.generate_question_with_usage(
+            concept, question_type, difficulty
+        )
+        return question
+
+    def generate_question_with_usage(self, concept, question_type, difficulty):
         instructions = {
             "definition": "Create one definition question asking the learner to define the concept.",
             "mcq": "Create one multiple-choice question with exactly four choices and one correct answer.",
             "short_answer": "Create one short-answer educational question.",
             "long_answer": "Create one open-ended long-answer educational question.",
         }
-        result = self._generate_json(
+        result, raw_usage = self._generate_json(
             "Create one age-appropriate educational question. " + instructions.get(question_type, "Create one educational question.")
             + " Return JSON with content, answer, explanation, and choices when applicable. Do not invent source citations.",
             {"concept": concept, "question_type": question_type, "difficulty": difficulty},
+            include_usage=True,
         )
         content = result.get("content")
         if not isinstance(content, str) or not content.strip():
@@ -92,7 +103,10 @@ class GeminiProvider(AIProvider):
         result["difficulty"] = difficulty
         result["verification_status"] = "ai_generated_unverified"
         result["provider"] = self.name
-        return result
+        usage = normalize_provider_usage(
+            raw_usage, provider=self.name, model=self.model
+        )
+        return result, usage
 
     def verify_question(self, question):
         result = self._generate_json(

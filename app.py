@@ -20,6 +20,7 @@ from services.login_throttle import clear_failures, is_locked, record_failure
 from services.api_rate_limit import allow_request
 from services.security_audit import append_security_event
 from providers.base import get_default_registry
+from providers.http import CircuitOpenError
 from dashboard_api import dashboard_api
 
 load_dotenv()
@@ -449,30 +450,59 @@ def generate_question():
 
     registry = get_default_registry()
     preferred_provider = os.environ.get("AI_PROVIDER", "").strip()
+    # Cross-vendor failover can change the processor receiving school data.
+    # It is opt-in and never overrides an explicit provider selection.
+    fallback_enabled = (
+        not preferred_provider
+        and os.environ.get("AI_PROVIDER_FALLBACK_ENABLED", "0") == "1"
+    )
     if preferred_provider:
-        provider = registry.get(preferred_provider)
-        if provider is None:
+        selected = registry.get(preferred_provider)
+        if selected is None:
             return err("configured AI_PROVIDER is unavailable or not configured", 503)
+        candidates = [selected]
     else:
-        # Prefer explicitly configured real providers. The offline stub is used
-        # only when AI_PROVIDER=stub-offline-v1 is selected intentionally.
-        provider = next(
-            (
-                registry[name]
-                for name in ("mistral-agent", "gemini-native", "openai-compatible")
-                if name in registry
-            ),
-            None,
-        )
+        # Automatic selection may move to the next configured provider only when
+        # the current provider's circuit is open. The offline stub remains opt-in.
+        candidates = [
+            registry[name]
+            for name in ("mistral-agent", "gemini-native", "openai-compatible")
+            if name in registry
+        ]
 
-    if provider is None:
+    if not candidates:
         return err("AI provider is not configured", 503)
 
-    try:
-        result = provider.generate_question(concept, question_type, difficulty)
-    except RuntimeError:
-        app.logger.warning("AI question generation failed; provider error details withheld.")
-        return err("AI generation failed; check model availability, API quota, and configuration", 502)
+    provider = None
+    result = None
+    circuit_retry_afters = []
+    for candidate in candidates:
+        try:
+            candidate_result = candidate.generate_question(
+                concept, question_type, difficulty
+            )
+        except CircuitOpenError as exc:
+            circuit_retry_afters.append(exc.retry_after)
+            # An explicit AI_PROVIDER selection is an operator decision; do not
+            # silently send prompts to a different configured provider.
+            if not fallback_enabled:
+                break
+            continue
+        except RuntimeError:
+            # Do not mask invalid credentials, malformed output or other
+            # non-circuit provider errors by silently switching vendors.
+            app.logger.warning("AI question generation failed; provider error details withheld.")
+            return err("AI generation failed; check model availability, API quota, and configuration", 502)
+        provider = candidate
+        result = candidate_result
+        break
+
+    if provider is None:
+        if circuit_retry_afters:
+            response, status = err("AI provider temporarily unavailable", 503)
+            response.headers["Retry-After"] = str(min(circuit_retry_afters))
+            return response, status
+        return err("AI provider is not configured", 503)
 
     return jsonify({"question": result, "provider": provider.name}), 200
 
