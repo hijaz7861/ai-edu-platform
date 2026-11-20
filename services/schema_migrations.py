@@ -374,6 +374,12 @@ def _add_teacher_identity_revocation_workflow(conn: sqlite3.Connection) -> None:
 
 def _add_tenant_job_binding_integrity_guards(conn: sqlite3.Connection) -> None:
     """Protect immutable job identity and require tenant/actor-matched events."""
+    # Reconcile the idempotent queue schema before validating its historical
+    # rows. This also repairs older partial databases whose migration ledger
+    # records version 2 even though a prior interrupted bootstrap omitted a
+    # queue table; CREATE IF NOT EXISTS does not rewrite existing data.
+    ensure_schema(conn, commit=False)
+
     tables = {
         row["name"] for row in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
