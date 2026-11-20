@@ -372,6 +372,35 @@ def _add_teacher_identity_revocation_workflow(conn: sqlite3.Connection) -> None:
     )
 
 
+def _add_tenant_job_binding_integrity_guards(conn: sqlite3.Connection) -> None:
+    """Protect immutable job identity and require tenant/actor-matched events."""
+    tables = {
+        row["name"] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    if not {"tenant_jobs", "tenant_job_events"} <= tables:
+        raise RuntimeError("tenant_job_schema_missing")
+
+    mismatch = conn.execute(
+        """
+        SELECT 1
+        FROM tenant_job_events event
+        JOIN tenant_jobs job ON job.id = event.job_id
+        WHERE event.institution_id IS NOT job.institution_id
+           OR event.actor_id IS NOT job.actor_id
+        LIMIT 1
+        """
+    ).fetchone()
+    if mismatch is not None:
+        # Do not silently rewrite historical audit data during an upgrade.
+        raise RuntimeError("tenant_job_event_binding_mismatch_requires_repair")
+
+    # Install the new guards in the same transaction as the migration record.
+    # Existing queue rows and event history are deliberately left untouched.
+    ensure_schema(conn, commit=False)
+
+
 _MIGRATIONS = (
     (1, "school_identity_password_hash", _add_school_password_hash),
     (2, "tenant_background_jobs", _add_tenant_job_schema),
@@ -380,6 +409,7 @@ _MIGRATIONS = (
     (5, "tenant_attendance_event_idempotency", _add_tenant_attendance_event_keys),
     (6, "tenant_teacher_identity_links", _add_teacher_identity_links),
     (7, "teacher_identity_revocation_workflow", _add_teacher_identity_revocation_workflow),
+    (8, "tenant_job_binding_integrity_guards", _add_tenant_job_binding_integrity_guards),
 )
 
 

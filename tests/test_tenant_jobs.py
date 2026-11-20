@@ -169,6 +169,10 @@ def test_worker_rejects_tampered_tenant_binding(job_env):
     e = job_env
     conn = init_db(e["path"])
     job_id, _ = enqueue(conn, e["a"], e["ua"], "worker-tenant-0001", ["classes"])
+    # Simulate legacy/corrupted storage where a database operator has removed
+    # the integrity trigger. Worker authorization must still reject a job
+    # whose immutable tenant binding no longer matches its initiating actor.
+    conn.execute("DROP TRIGGER tenant_jobs_identity_immutable")
     conn.execute("UPDATE tenant_jobs SET institution_id=? WHERE id=?", (e["b"], job_id))
     conn.commit()
     result = run_once(conn, "worker-tenant-test", HANDLERS)
@@ -451,6 +455,47 @@ def test_job_events_are_append_only_and_init_is_repeatable(job_env):
     reopened = init_db(e["path"])
     assert reopened.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='tenant_jobs'").fetchone()[0] == 1
     reopened.close()
+
+
+def test_tenant_job_identity_and_event_binding_are_database_enforced(job_env):
+    e = job_env
+    conn = init_db(e["path"])
+    job_id, _ = enqueue(conn, e["a"], e["ua"], "worker-binding-0001", ["classes"])
+
+    with pytest.raises(sqlite3.IntegrityError, match="tenant job identity is immutable"):
+        conn.execute(
+            "UPDATE tenant_jobs SET institution_id=? WHERE id=?",
+            (e["b"], job_id),
+        )
+    conn.rollback()
+
+    with pytest.raises(sqlite3.IntegrityError, match="tenant job identity is immutable"):
+        conn.execute(
+            "UPDATE tenant_jobs SET actor_id=? WHERE id=?",
+            ("foreign-actor", job_id),
+        )
+    conn.rollback()
+
+    invalid_events = (
+        (e["b"], e["ua"]["id"]),
+        (e["a"], "foreign-actor"),
+    )
+    for institution_id, actor_id in invalid_events:
+        with pytest.raises(sqlite3.IntegrityError, match="tenant job event binding mismatch"):
+            conn.execute(
+                """INSERT INTO tenant_job_events
+                   (id, job_id, institution_id, actor_id, event_type, detail_json, created_at)
+                   VALUES (?, ?, ?, ?, 'job_failed', '{}', ?)""",
+                (uuid.uuid4().hex, job_id, institution_id, actor_id,
+                 "2026-11-20T00:00:00+00:00"),
+            )
+        conn.rollback()
+
+    assert conn.execute(
+        "SELECT COUNT(*) FROM tenant_job_events WHERE job_id=?",
+        (job_id,),
+    ).fetchone()[0] == 1
+    conn.close()
 
 
 def test_enqueue_rejects_open_transactions_and_unsupported_inputs(job_env):

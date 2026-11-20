@@ -142,6 +142,36 @@ _TENANT_JOB_SCHEMA_STATEMENTS = (
         SELECT RAISE(ABORT, 'tenant job events are append-only');
     END
     """,
+    """
+    CREATE TRIGGER IF NOT EXISTS tenant_jobs_identity_immutable
+    BEFORE UPDATE OF id, institution_id, actor_id, job_type, payload_json,
+                     request_hash, idempotency_key_hash, created_at
+    ON tenant_jobs
+    WHEN NEW.id IS NOT OLD.id
+      OR NEW.institution_id IS NOT OLD.institution_id
+      OR NEW.actor_id IS NOT OLD.actor_id
+      OR NEW.job_type IS NOT OLD.job_type
+      OR NEW.payload_json IS NOT OLD.payload_json
+      OR NEW.request_hash IS NOT OLD.request_hash
+      OR NEW.idempotency_key_hash IS NOT OLD.idempotency_key_hash
+      OR NEW.created_at IS NOT OLD.created_at
+    BEGIN
+        SELECT RAISE(ABORT, 'tenant job identity is immutable');
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS tenant_job_events_validate_binding
+    BEFORE INSERT ON tenant_job_events
+    WHEN NOT EXISTS (
+        SELECT 1 FROM tenant_jobs job
+        WHERE job.id = NEW.job_id
+          AND job.institution_id = NEW.institution_id
+          AND job.actor_id = NEW.actor_id
+    )
+    BEGIN
+        SELECT RAISE(ABORT, 'tenant job event binding mismatch');
+    END
+    """,
 )
 
 

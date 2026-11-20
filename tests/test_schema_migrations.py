@@ -25,6 +25,7 @@ def test_migrations_are_versioned_and_idempotent(tmp_path):
         (5, "tenant_attendance_event_idempotency"),
         (6, "tenant_teacher_identity_links"),
         (7, "teacher_identity_revocation_workflow"),
+        (8, "tenant_job_binding_integrity_guards"),
     ]
     assert _versions(first) == expected
     assert "password_hash" in {
@@ -41,6 +42,70 @@ def test_migrations_are_versioned_and_idempotent(tmp_path):
     second = init_db(path)
     assert _versions(second) == expected
     second.close()
+
+
+def test_tenant_job_binding_migration_upgrades_v7_database(tmp_path):
+    from services.schema_migrations import apply_migrations
+
+    conn = init_db(str(tmp_path / "tenant-job-binding-upgrade.sqlite"))
+    conn.execute("DROP TRIGGER schema_migrations_no_delete")
+    conn.execute("DELETE FROM schema_migrations WHERE version=8")
+    conn.execute("DROP TRIGGER IF EXISTS tenant_jobs_identity_immutable")
+    conn.execute("DROP TRIGGER IF EXISTS tenant_job_events_validate_binding")
+    conn.commit()
+
+    apply_migrations(conn)
+    triggers = {
+        row["name"] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='trigger'"
+        ).fetchall()
+    }
+    assert "tenant_jobs_identity_immutable" in triggers
+    assert "tenant_job_events_validate_binding" in triggers
+    assert _versions(conn)[-1] == (8, "tenant_job_binding_integrity_guards")
+    conn.close()
+
+
+def test_tenant_job_binding_migration_refuses_mismatched_legacy_events(tmp_path):
+    import pytest
+    from services.schema_migrations import apply_migrations
+
+    conn = init_db(str(tmp_path / "tenant-job-binding-corrupt.sqlite"))
+    conn.execute("DROP TRIGGER schema_migrations_no_delete")
+    conn.execute("DELETE FROM schema_migrations WHERE version=8")
+    conn.execute("DROP TRIGGER IF EXISTS tenant_jobs_identity_immutable")
+    conn.execute("DROP TRIGGER IF EXISTS tenant_job_events_validate_binding")
+    conn.execute(
+        "INSERT INTO institutions(id, name, code, status) VALUES "
+        "('guard-tenant-a', 'Guard A', 'GUARD-A', 'active'), "
+        "('guard-tenant-b', 'Guard B', 'GUARD-B', 'active')"
+    )
+    conn.execute(
+        """INSERT INTO tenant_jobs
+           (id, institution_id, actor_id, job_type, payload_json, request_hash,
+            idempotency_key_hash, status, attempt_count, max_attempts,
+            available_at, created_at, updated_at)
+           VALUES ('guard-job', 'guard-tenant-a', 'guard-actor',
+                   'tenant_health_check', '{"resources":["classes"]}',
+                   'request-hash', 'key-hash', 'queued', 0, 3,
+                   '2026-11-20T00:00:00+00:00',
+                   '2026-11-20T00:00:00+00:00',
+                   '2026-11-20T00:00:00+00:00')"""
+    )
+    conn.execute(
+        """INSERT INTO tenant_job_events
+           (id, job_id, institution_id, actor_id, event_type, detail_json, created_at)
+           VALUES ('guard-event', 'guard-job', 'guard-tenant-b', 'guard-actor',
+                   'job_queued', '{}', '2026-11-20T00:00:00+00:00')"""
+    )
+    conn.commit()
+
+    with pytest.raises(
+        RuntimeError, match="tenant_job_event_binding_mismatch_requires_repair"
+    ):
+        apply_migrations(conn)
+    assert _versions(conn)[-1] == (7, "teacher_identity_revocation_workflow")
+    conn.close()
 
 
 def test_legacy_users_table_receives_password_hash_migration(tmp_path):
@@ -147,6 +212,7 @@ def test_concurrent_database_initialization_applies_each_migration_once(tmp_path
         (5, "tenant_attendance_event_idempotency"),
         (6, "tenant_teacher_identity_links"),
         (7, "teacher_identity_revocation_workflow"),
+        (8, "tenant_job_binding_integrity_guards"),
     ]
     assert all(versions == expected and has_jobs for versions, has_jobs in results)
 
@@ -160,7 +226,7 @@ def test_tenant_leave_request_key_migration_has_expiry_column(tmp_path):
         ).fetchall()
     }
     assert {"idempotency_key_hash", "request_hash", "actor_id", "expires_at"} <= columns
-    assert _versions(conn)[-1] == (7, "teacher_identity_revocation_workflow")
+    assert _versions(conn)[-1] == (8, "tenant_job_binding_integrity_guards")
     conn.close()
 
 
@@ -216,7 +282,7 @@ def test_legacy_v3_leave_key_table_is_upgraded_for_expiry(tmp_path):
     }
     assert "tenant_leave_request_keys_no_update" not in triggers
     assert "tenant_leave_request_keys_no_delete" not in triggers
-    assert _versions(upgraded)[-1] == (7, "teacher_identity_revocation_workflow")
+    assert _versions(upgraded)[-1] == (8, "tenant_job_binding_integrity_guards")
     upgraded.close()
 
 
@@ -231,7 +297,7 @@ def test_teacher_identity_link_migration_enforces_tenant_scope_and_role(tmp_path
     assert {"self_attendance", "self_leave_request", "view_own_records"} <= set(
         __import__("json").loads(role["permissions"])
     )
-    assert _versions(conn)[-1] == (7, "teacher_identity_revocation_workflow")
+    assert _versions(conn)[-1] == (8, "tenant_job_binding_integrity_guards")
 
     conn.execute(
         "INSERT INTO institutions(id, name, code, status) VALUES "

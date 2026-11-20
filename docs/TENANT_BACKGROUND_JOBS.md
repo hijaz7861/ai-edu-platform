@@ -14,6 +14,8 @@ This increment adds a persistent SQLite queue, an authenticated tenant enqueue/s
 - Claims use `BEGIN IMMEDIATE`, worker-owned leases and bounded attempts. Expired leases can be reclaimed and stale workers cannot complete a job after losing the lease.
 - Only explicit `RetryableJobError` exceptions retry with bounded backoff. Unexpected exception text is not persisted.
 - Payload/result sizes are bounded; job transition events are append-only.
+- SQLite triggers prevent changes to a queued job's ID, tenant, initiating actor, type, payload, request hash, idempotency-key hash or creation time. Event insertion is accepted only when both tenant and actor match the referenced job.
+- Migration 8 checks existing event/job bindings before installing these guards. It refuses to proceed if historical rows disagree; it never rewrites audit history. These are application/database integrity controls, not tamper-proof protection against an operator who can alter the SQLite schema or database file.
 
 ## Worker command
 
@@ -41,6 +43,7 @@ The current numbered migrations cover:
 5. Institution-scoped idempotency metadata for tenant attendance events, with expiry indexes.
 6. Tenant-bound teacher identity links with unique user/teacher scope and reassignment guards.
 7. Immutable teacher identity revocation events, idempotent revocation keys and event-backed link deletion.
+8. Immutable tenant-job identity and tenant/actor-matched append-only job-event guards, with a fail-closed preflight for existing event history.
 
 Migration code and its ledger entry commit atomically. Repeated initialization is idempotent. Existing case-variant duplicate emails are preserved; the case-insensitive unique index is installed only after duplicates are resolved. CI regressions cover legacy upgrade, repeated startup, duplicate preservation/reconciliation and four concurrent initializers.
 
