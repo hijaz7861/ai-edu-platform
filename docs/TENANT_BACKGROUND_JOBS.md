@@ -64,7 +64,14 @@ must hold the active institution subscription entitlement for every selected
 paid resource. The current mapping is classes -> class_management,
 question_banks -> question_bank_analysis, and exam_blueprints -> exam_generation.
 The books count is a baseline diagnostic and has no separate paid feature key
-in the current licensing catalog.
+in the current licensing catalog. This is an explicit unmetered-resource
+exemption, not a fallback for unknown resources: the registry completeness
+guard requires every key in RESOURCE_TABLES to appear exactly once in either
+RESOURCE_ENTITLEMENTS or UNMETERED_RESOURCES, with no overlap. A newly added
+resource, missing feature mapping, empty feature name, or overlapping
+exemption makes enqueue/worker entitlement validation fail closed, including
+in development mode. Add a focused policy test and a reviewed exemption or
+paid-feature mapping whenever the resource catalog changes.
 
 The same check runs during enqueue, before worker execution, on every
 cooperative heartbeat, immediately before a result is committed, and when a

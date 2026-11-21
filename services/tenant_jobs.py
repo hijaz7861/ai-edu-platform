@@ -24,6 +24,10 @@ RESOURCE_ENTITLEMENTS = {
     "exam_blueprints": "exam_generation",
     "question_banks": "question_bank_analysis",
 }
+# Every queue resource must be explicitly classified. "books" is currently a
+# baseline diagnostic without a paid feature key; future resources must not
+# silently inherit that exemption by being absent from RESOURCE_ENTITLEMENTS.
+UNMETERED_RESOURCES = frozenset({"books"})
 MAX_PAYLOAD_BYTES = 8192
 MAX_RESULT_BYTES = 32768
 DEFAULT_MAX_ATTEMPTS = 3
@@ -220,7 +224,27 @@ def _decode_job_payload(payload_json):
         raise JobAuthorizationError("job_payload_invalid") from None
 
 
+def _resource_policy_is_complete():
+    """Require every queue resource to be paid-gated or explicitly unmetered."""
+    resources = set(RESOURCE_TABLES)
+    entitled = set(RESOURCE_ENTITLEMENTS)
+    unmetered = set(UNMETERED_RESOURCES)
+    return (
+        not (entitled & unmetered)
+        and resources == (entitled | unmetered)
+        and all(
+            isinstance(RESOURCE_ENTITLEMENTS.get(resource), str)
+            and bool(RESOURCE_ENTITLEMENTS[resource].strip())
+            for resource in entitled
+        )
+    )
+
+
 def _resource_entitlements_allowed(conn, institution_id, payload):
+    # Registry drift is a policy failure even in development: a newly added
+    # resource must never become implicitly unmetered by omission.
+    if not _resource_policy_is_complete():
+        return False
     if not _entitlements_enforced():
         return True
     if not isinstance(payload, dict) or set(payload) != {"resources"}:
@@ -236,8 +260,10 @@ def _resource_entitlements_allowed(conn, institution_id, payload):
     ):
         return False
     for resource in resources:
-        feature = RESOURCE_ENTITLEMENTS.get(resource)
-        if feature and not feature_allowed(conn, institution_id, feature):
+        if resource in UNMETERED_RESOURCES:
+            continue
+        feature = RESOURCE_ENTITLEMENTS[resource]
+        if not feature_allowed(conn, institution_id, feature):
             return False
     return True
 

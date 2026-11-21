@@ -6,7 +6,7 @@ import sys
 import uuid
 import pytest
 from db import get_connection, init_db
-from services import core, identity
+from services import core, identity, tenant_jobs
 from services.licensing import change_subscription_status, create_plan, grant_subscription
 from services.tenant_job_handlers import HANDLERS
 from services.tenant_jobs import (RetryableJobError, LeaseLost, _finish_success, claim_next_job, enqueue_job, get_tenant_job, renew_job_lease, run_once)
@@ -785,3 +785,42 @@ def test_worker_rechecks_entitlement_before_publishing_handler_result(job_env, m
     assert row["result_json"] is None
     conn.close()
 
+def test_job_resource_registry_has_explicit_entitlement_or_exemption(job_env):
+    assert tenant_jobs._resource_policy_is_complete()
+    assert set(tenant_jobs.RESOURCE_TABLES) == (
+        set(tenant_jobs.RESOURCE_ENTITLEMENTS)
+        | set(tenant_jobs.UNMETERED_RESOURCES)
+    )
+    assert tenant_jobs.UNMETERED_RESOURCES == frozenset({"books"})
+
+
+@pytest.mark.parametrize(
+    "policy_change",
+    ["new_resource", "missing_entitlement", "overlapping_exemption"],
+)
+def test_job_resource_policy_fails_closed_when_registry_is_incomplete(
+    job_env, monkeypatch, policy_change
+):
+    e = job_env
+    conn = init_db(e["path"])
+    if policy_change == "new_resource":
+        monkeypatch.setitem(
+            tenant_jobs.RESOURCE_TABLES, "student_records", "student_records"
+        )
+    elif policy_change == "missing_entitlement":
+        monkeypatch.delitem(tenant_jobs.RESOURCE_ENTITLEMENTS, "classes")
+    else:
+        monkeypatch.setattr(
+            tenant_jobs, "UNMETERED_RESOURCES",
+            frozenset({"books", "classes"}),
+        )
+
+    assert not tenant_jobs._resource_policy_is_complete()
+    # The fixture deliberately disables paid-entitlement enforcement. A
+    # registry-policy error must nevertheless fail closed in every mode.
+    assert not tenant_jobs._resource_entitlements_allowed(
+        conn, e["a"], {"resources": ["classes"]}
+    )
+    with pytest.raises(tenant_jobs.JobEntitlementError, match="job_entitlement_denied"):
+        enqueue(conn, e["a"], e["ua"], "resource-policy-" + policy_change, ["classes"])
+    conn.close()
