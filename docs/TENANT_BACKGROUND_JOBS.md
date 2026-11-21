@@ -73,6 +73,13 @@ exemption makes enqueue/worker entitlement validation fail closed, including
 in development mode. Add a focused policy test and a reviewed exemption or
 paid-feature mapping whenever the resource catalog changes.
 
+The initial health-check handler queries each registered table with an
+`institution_id = ?` predicate. A two-tenant regression inserts rows for both
+institutions in every registered resource table, verifies each table exposes
+the tenant key, and confirms one tenant's result counts exclude the other's
+rows. New resources must retain this tenant-scoped query contract or use a
+separately reviewed handler with equivalent ownership enforcement.
+
 The same check runs during enqueue, before worker execution, on every
 cooperative heartbeat, immediately before a result is committed, and when a
 tenant user reads a job result. An absent, expired, suspended or malformed

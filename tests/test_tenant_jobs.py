@@ -824,3 +824,48 @@ def test_job_resource_policy_fails_closed_when_registry_is_incomplete(
     with pytest.raises(tenant_jobs.JobEntitlementError, match="job_entitlement_denied"):
         enqueue(conn, e["a"], e["ua"], "resource-policy-" + policy_change, ["classes"])
     conn.close()
+
+def test_health_check_scopes_every_registered_resource_to_job_tenant(job_env):
+    e = job_env
+    conn = init_db(e["path"])
+    for tenant_id, suffix in ((e["a"], "a"), (e["b"], "b")):
+        conn.execute(
+            "INSERT INTO books (id, institution_id, title) VALUES (?, ?, ?)",
+            ("book-" + suffix, tenant_id, "Book " + suffix),
+        )
+        conn.execute(
+            "INSERT INTO exam_blueprints (id, institution_id) VALUES (?, ?)",
+            ("blueprint-" + suffix, tenant_id),
+        )
+        conn.execute(
+            "INSERT INTO question_banks (id, institution_id, name) VALUES (?, ?, ?)",
+            ("bank-" + suffix, tenant_id, "Bank " + suffix),
+        )
+    conn.commit()
+
+    existing_tables = {
+        row["name"] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    for resource, table in tenant_jobs.RESOURCE_TABLES.items():
+        assert table in existing_tables, resource
+        columns = {
+            row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        assert "institution_id" in columns, resource
+
+    resources = sorted(tenant_jobs.RESOURCE_TABLES)
+    job_id, created = enqueue(
+        conn, e["a"], e["ua"], "worker-all-resource-scope-0001", resources
+    )
+    assert created
+    assert run_once(conn, "worker-all-resource-scope", HANDLERS) == {
+        "job_id": job_id, "status": "succeeded"
+    }
+    result = get_tenant_job(
+        conn, job_id=job_id, institution_id=e["a"]
+    )["result"]["resource_counts"]
+    assert result == {resource: 1 for resource in resources}
+    assert get_tenant_job(conn, job_id=job_id, institution_id=e["b"]) is None
+    conn.close()
