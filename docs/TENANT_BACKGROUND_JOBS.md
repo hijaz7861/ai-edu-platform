@@ -13,6 +13,7 @@ This increment adds a persistent SQLite queue, an authenticated tenant enqueue/s
 - Idempotency keys are SHA-256 hashed at rest and unique per institution; reuse with a different canonical request returns 409.
 - Claims use `BEGIN IMMEDIATE`, worker-owned leases and bounded attempts. Expired leases can be reclaimed and stale workers cannot complete a job after losing the lease.
 - Only explicit `RetryableJobError` exceptions retry with bounded backoff. Unexpected exception text is not persisted.
+- The failure/retry transaction revalidates the initiating user's active identity, permission and current resource entitlement. If authority was revoked while a handler was running, even a retryable exception becomes a terminal `authorization_revoked` failure; revoked work is never requeued.
 - Payload/result sizes are bounded; job transition events are append-only.
 - SQLite triggers prevent changes to a queued job's ID, tenant, initiating actor, type, payload, request hash, idempotency-key hash or creation time. Event insertion is accepted only when both tenant and actor match the referenced job.
 - Migration 8 checks existing event/job bindings before installing these guards. It refuses to proceed if historical rows disagree; it never rewrites audit history. These are application/database integrity controls, not tamper-proof protection against an operator who can alter the SQLite schema or database file.
