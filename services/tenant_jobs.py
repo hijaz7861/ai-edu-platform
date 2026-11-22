@@ -570,6 +570,18 @@ def _finish_failure(conn, *, job_id, worker_id, error_code, retryable=False):
         row = _owned_job(conn, job_id, worker_id)
         if row is None:
             raise LeaseLost("worker_lease_lost")
+        # A handler may fail after its initiating school identity, permission,
+        # tenant or paid entitlement has been revoked. Never put that work back
+        # on the queue: revalidate authority in the same transaction that
+        # records the failure/retry decision.
+        try:
+            _require_job_authority(
+                conn, row["institution_id"], row["actor_id"], row["job_type"],
+                payload=_decode_job_payload(row["payload_json"]),
+            )
+        except JobAuthorizationError:
+            error_code = "authorization_revoked"
+            retryable = False
         now_dt = datetime.now(timezone.utc)
         now = now_dt.isoformat()
         retry = retryable and row["attempt_count"] < row["max_attempts"]
