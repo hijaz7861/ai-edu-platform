@@ -423,6 +423,51 @@ def test_only_explicit_retryable_failure_is_retried(job_env):
     conn.close()
 
 
+def test_revoked_authority_prevents_retry_after_retryable_failure(job_env):
+    e = job_env
+    conn = init_db(e["path"])
+    job_id, _ = enqueue(
+        conn, e["a"], e["ua"], "worker-revoked-retry-0001", ["classes"]
+    )
+
+    def revoked_handler(active_conn, _context):
+        # Simulate an administrator revoking the initiating user's role while
+        # a handler is in flight, immediately before it reports a transient
+        # failure. The failure path must not schedule another attempt.
+        active_conn.execute(
+            "DELETE FROM role_assignments WHERE user_id=?",
+            (e["ua"]["id"],),
+        )
+        active_conn.commit()
+        raise RetryableJobError()
+
+    result = run_once(
+        conn, "worker-revoked-retry-test",
+        {"tenant_health_check": revoked_handler},
+    )
+    row = conn.execute(
+        "SELECT status, attempt_count, last_error_code "
+        "FROM tenant_jobs WHERE id=?",
+        (job_id,),
+    ).fetchone()
+    events = conn.execute(
+        "SELECT event_type, detail_json FROM tenant_job_events "
+        "WHERE job_id=? ORDER BY created_at, rowid",
+        (job_id,),
+    ).fetchall()
+
+    assert result == {"job_id": job_id, "status": "failed"}
+    assert row["status"] == "failed"
+    assert row["attempt_count"] == 1
+    assert row["last_error_code"] == "authorization_revoked"
+    assert [event["event_type"] for event in events] == [
+        "job_queued", "job_started", "job_failed"
+    ]
+    assert json.loads(events[-1]["detail_json"])["error_code"] == "authorization_revoked"
+    assert all(event["event_type"] != "job_retry_scheduled" for event in events)
+    conn.close()
+
+
 def test_handler_exception_text_is_not_persisted(job_env):
     e = job_env
     conn = init_db(e["path"])
