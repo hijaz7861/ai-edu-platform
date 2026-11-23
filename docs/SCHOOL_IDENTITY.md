@@ -102,7 +102,7 @@ by tenant, entitlement and role-negative tests.
 
 ## Leave date-overlap protection
 
-- Leave submission checks for an existing pending or approved request for the same tenant-owned teacher whose inclusive date range overlaps the requested range.
+- Leave submission checks for an existing pending or approved request only when both its teacher and leave type belong to the authenticated institution, and its inclusive date range overlaps the requested range. Inconsistent legacy rows that connect one tenant's teacher to another tenant's leave type are ignored so corrupt cross-tenant history cannot deny service to either tenant.
 - The check runs after BEGIN IMMEDIATE and before insertion, so concurrent submissions against the same SQLite database are serialized; a conflicting request returns HTTP 409 with leave_dates_overlap.
 - Rejected requests do not reserve dates. Adjacent ranges are allowed (for example, an existing request ending on 12 December and a new request starting on 13 December).
 - This is a date-overlap guard, not a leave-balance or working-day calculation. Annual balance accounting, holidays/weekends, partial-day leave, cancellation and corrections remain outstanding.
