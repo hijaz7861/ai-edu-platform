@@ -178,12 +178,17 @@ def create_school_leave_request(
         # Serialize overlap checks with the write transaction. Pending and approved
         # requests reserve dates; rejected requests do not. Date ranges are inclusive.
         overlap = conn.execute(
-            """SELECT 1 FROM leave_requests
-               WHERE teacher_id = ?
-                 AND status IN ('pending', 'approved')
-                 AND start_date <= ? AND end_date >= ?
+            """SELECT 1
+               FROM leave_requests lr
+               JOIN teachers t ON t.id = lr.teacher_id
+               JOIN leave_types lt ON lt.id = lr.leave_type_id
+               WHERE lr.teacher_id = ?
+                 AND t.institution_id = ?
+                 AND lt.institution_id = ?
+                 AND lr.status IN ('pending', 'approved')
+                 AND lr.start_date <= ? AND lr.end_date >= ?
                LIMIT 1""",
-            (teacher_id, end_date, start_date),
+            (teacher_id, institution_id, institution_id, end_date, start_date),
         ).fetchone()
         if overlap is not None:
             raise LeaveDateOverlapError("leave_dates_overlap")
