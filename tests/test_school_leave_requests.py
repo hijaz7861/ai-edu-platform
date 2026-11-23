@@ -551,6 +551,55 @@ def test_school_leave_submission_rejects_overlapping_active_leave_but_allows_adj
     assert allowed.status_code == 201
 
 
+def test_cross_tenant_inconsistent_leave_history_does_not_block_own_tenant_request(leave_env):
+    """A legacy row with this tenant's teacher but another tenant's leave type
+    must not reserve dates or deny service to the authenticated tenant.
+    """
+    e = leave_env
+    conn = init_db(e["path"])
+    foreign_history_id = uuid.uuid4().hex
+    conn.execute(
+        """INSERT INTO leave_requests
+           (id, teacher_id, leave_type_id, start_date, end_date, reason, status, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'approved', ?)""",
+        (
+            foreign_history_id,
+            e["teacher_a"],
+            e["leave_type_b"],
+            "2026-12-05",
+            "2026-12-07",
+            "Inconsistent cross-tenant legacy row",
+            "2026-11-09T00:00:00+00:00",
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    client = e["app"].app.test_client()
+    csrf = login(client, e["users"]["Institution Admin"])
+    payload = {
+        "teacher_id": e["teacher_a"],
+        "leave_type_id": e["leave_type_a"],
+        "start_date": "2026-12-05",
+        "end_date": "2026-12-07",
+        "reason": "Valid tenant-owned leave request",
+    }
+    response = _submit_leave(
+        client, csrf, "leave-cross-tenant-overlap-0001", payload
+    )
+    assert response.status_code == 201
+    assert response.get_json()["status"] == "pending"
+
+    conn = init_db(e["path"])
+    created = conn.execute(
+        "SELECT teacher_id, leave_type_id FROM leave_requests WHERE id=?",
+        (response.get_json()["id"],),
+    ).fetchone()
+    assert created["teacher_id"] == e["teacher_a"]
+    assert created["leave_type_id"] == e["leave_type_a"]
+    conn.close()
+
+
 def _decide_leave(client, csrf, request_id, decision, comments=None):
     payload = {"decision": decision}
     if comments is not None:
