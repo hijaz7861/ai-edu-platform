@@ -136,7 +136,6 @@ def create_school_leave_request(
             conn, user_id=actor_id, institution_id=institution_id
         ):
             raise LeaveAuthorizationError("active_tenant_identity_required")
-        _require_leave_entitlement(conn, institution_id)
         permissions = identity.institution_permissions(
             conn, user_id=actor_id, institution_id=institution_id
         )
@@ -152,6 +151,7 @@ def create_school_leave_request(
                 raise LeaveAuthorizationError("teacher_identity_required")
         elif not ({"*", "manage_institution", "approve_leave", "manage_attendance_policy"} & permissions):
             raise LeaveAuthorizationError("leave_request_submission_denied")
+        _require_leave_entitlement(conn, institution_id)
 
         now_dt = datetime.now(timezone.utc)
         created_at = now_dt.isoformat()
@@ -318,12 +318,12 @@ def decide_school_leave_approval(
             conn, user_id=actor_id, institution_id=institution_id
         ):
             raise LeaveAuthorizationError("active_tenant_identity_required")
-        _require_leave_entitlement(conn, institution_id)
         permissions = identity.institution_permissions(
             conn, user_id=actor_id, institution_id=institution_id
         )
         if not ({"*", "approve_leave"} & permissions):
             raise LeaveAuthorizationError("leave_approval_denied")
+        _require_leave_entitlement(conn, institution_id)
 
         leave_request = conn.execute(
             """SELECT lr.id, lr.status
