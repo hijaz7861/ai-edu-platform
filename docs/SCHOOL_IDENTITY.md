@@ -152,3 +152,11 @@ by tenant, entitlement and role-negative tests.
 - Teacher self-service leave requests still enter the configured approval workflow. Teacher Portal users cannot approve their own requests. Attendance remains server-UTC-day based; teacher-local timezone, historical entry, corrections, cancellation, leave balances and working-day calculations are not implemented.
 - `POST /api/school/teachers/<teacher_id>/identity/revoke` lets only an active same-tenant `manage_users` actor revoke a Teacher Portal link. It requires CSRF, a reason code and an idempotency key; it atomically writes an append-only `teacher_identity_events` row plus the general audit row, clears `teachers.user_id`, suspends the old school user and deletes the active link. The teacher can then be provisioned to a new school user. Same-key/same-payload retries return the original revocation; key reuse with a different payload returns 409. Cross-tenant targets return 404; Principal, HR/Attendance Officer and Teacher Portal roles are denied by default.
 - Password recovery, email verification/invitations, MFA, session revocation/versioning, teacher profile management, and live staging acceptance remain open production identity gates.
+
+## Transaction-level leave entitlement enforcement
+
+- The leave submission and approval routes perform an early feature check for a fast response, but that check is not the authorization boundary.
+- `create_school_leave_request()` and `decide_school_leave_approval()` independently recheck the `leave_management` entitlement after `BEGIN IMMEDIATE`, alongside the active tenant identity and role permission.
+- This serializes the entitlement decision with SQLite writers: a subscription suspension/expiry committed before the write transaction is observed and denies the operation; a concurrent writer cannot change the subscription until the leave transaction completes.
+- The service raises `LeaveEntitlementError`, which maps to `403 subscription_required`. Denial occurs before idempotency replay or any leave/approval/audit mutation.
+- Regression tests revoke the subscription after route preflight but before the service transaction and verify that neither a leave request nor an approval decision/audit event is persisted.
