@@ -27,7 +27,7 @@ from services.tenant_jobs import (
 )
 from services.tenant_leave import (
     create_school_leave_request, decide_school_leave_approval,
-    LeaveAuthorizationError, LeaveIdempotencyConflict,
+    LeaveAuthorizationError, LeaveEntitlementError, LeaveIdempotencyConflict,
     LeaveResourceNotFound, LeaveDateOverlapError, LeaveApprovalConflict,
 )
 from services.tenant_attendance import (
@@ -860,6 +860,8 @@ def school_teacher_create_leave_request():
             idempotency_key=request.headers.get("Idempotency-Key"),
             self_service=True,
         )
+    except LeaveEntitlementError:
+        return err("subscription_required", 403)
     except LeaveAuthorizationError:
         return err("permission_denied", 403)
     except LeaveResourceNotFound:
@@ -1090,6 +1092,8 @@ def school_create_leave_request():
             substitute_teacher_id=body.get("substitute_teacher_id"),
             idempotency_key=request.headers.get("Idempotency-Key"),
         )
+    except LeaveEntitlementError:
+        return err("subscription_required", 403)
     except LeaveAuthorizationError:
         return err("permission_denied", 403)
     except LeaveResourceNotFound:
@@ -1131,6 +1135,8 @@ def school_decide_leave_approval(request_id):
             decision=body.get("decision"),
             comments=body.get("comments"),
         )
+    except LeaveEntitlementError:
+        return err("subscription_required", 403)
     except LeaveAuthorizationError:
         return err("permission_denied", 403)
     except LeaveResourceNotFound:
