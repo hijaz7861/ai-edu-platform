@@ -910,3 +910,156 @@ def test_school_leave_approval_fails_closed_for_legacy_request_without_creator_a
     )
     assert response.status_code == 409
     assert response.get_json() == {"error": "leave_approval_conflict"}
+
+def test_leave_submission_rechecks_entitlement_after_route_preflight(leave_env, monkeypatch):
+    e = leave_env
+    conn = init_db(e["path"])
+    plan_id = create_plan(
+        conn,
+        code="leave-race-submit-" + uuid.uuid4().hex[:8],
+        name="Leave Submission Race Test",
+        entitlements={"leave_management": True},
+    )
+    subscription_id = grant_subscription(
+        conn,
+        institution_id=e["tenant_a"],
+        plan_id=plan_id,
+        granted_by="ci-test-admin",
+        reason="verify transactional entitlement recheck",
+    )
+    conn.close()
+
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setattr(e["app"], "allow_request", lambda *args, **kwargs: True)
+
+    def revoke_after_route_preflight(institution_id, feature):
+        assert institution_id == e["tenant_a"]
+        assert feature == "leave_management"
+        revoke_conn = init_db(e["path"])
+        revoke_conn.execute(
+            "UPDATE institution_subscriptions SET status='suspended' WHERE id=?",
+            (subscription_id,),
+        )
+        revoke_conn.commit()
+        revoke_conn.close()
+        return None
+
+    # Simulate subscription revocation after the route's preflight check but
+    # before create_school_leave_request opens its BEGIN IMMEDIATE transaction.
+    monkeypatch.setattr(
+        e["app"], "_require_feature_access", revoke_after_route_preflight
+    )
+    client = e["app"].app.test_client()
+    csrf = login(client, e["users"]["Institution Admin"])
+    payload = {
+        "teacher_id": e["teacher_a"],
+        "leave_type_id": e["leave_type_a"],
+        "start_date": "2028-06-01",
+        "end_date": "2028-06-02",
+        "reason": "Must not persist after entitlement revocation",
+    }
+    response = _submit_leave(
+        client, csrf, "leave-entitlement-race-submit-0001", payload
+    )
+
+    assert response.status_code == 403
+    assert response.get_json() == {"error": "subscription_required"}
+    verify = init_db(e["path"])
+    assert verify.execute(
+        "SELECT COUNT(*) FROM leave_requests WHERE teacher_id=? "
+        "AND start_date='2028-06-01' AND end_date='2028-06-02'",
+        (e["teacher_a"],),
+    ).fetchone()[0] == 0
+    assert verify.execute(
+        "SELECT COUNT(*) FROM tenant_leave_request_keys "
+        "WHERE institution_id=? AND idempotency_key_hash IS NOT NULL "
+        "AND request_hash IS NOT NULL",
+        (e["tenant_a"],),
+    ).fetchone()[0] == 0
+    assert verify.execute(
+        "SELECT COUNT(*) FROM audit_log "
+        "WHERE action_type='school_leave_request_created' "
+        "AND after_state LIKE '%2028-06-01%'"
+    ).fetchone()[0] == 0
+    verify.close()
+
+
+def test_leave_approval_rechecks_entitlement_after_route_preflight(leave_env, monkeypatch):
+    e = leave_env
+    admin = e["app"].app.test_client()
+    admin_csrf = login(admin, e["users"]["Institution Admin"])
+    created = _submit_leave(
+        admin,
+        admin_csrf,
+        "leave-entitlement-race-approval-create-01",
+        {
+            "teacher_id": e["teacher_a"],
+            "leave_type_id": e["leave_type_a"],
+            "start_date": "2028-07-01",
+            "end_date": "2028-07-02",
+            "reason": "Approval must stop after entitlement revocation",
+        },
+    )
+    assert created.status_code == 201
+    request_id = created.get_json()["id"]
+
+    conn = init_db(e["path"])
+    plan_id = create_plan(
+        conn,
+        code="leave-race-approve-" + uuid.uuid4().hex[:8],
+        name="Leave Approval Race Test",
+        entitlements={"leave_management": True},
+    )
+    subscription_id = grant_subscription(
+        conn,
+        institution_id=e["tenant_a"],
+        plan_id=plan_id,
+        granted_by="ci-test-admin",
+        reason="verify transactional approval entitlement recheck",
+    )
+    conn.close()
+
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setattr(e["app"], "allow_request", lambda *args, **kwargs: True)
+
+    def revoke_after_route_preflight(institution_id, feature):
+        assert institution_id == e["tenant_a"]
+        assert feature == "leave_management"
+        revoke_conn = init_db(e["path"])
+        revoke_conn.execute(
+            "UPDATE institution_subscriptions SET status='suspended' WHERE id=?",
+            (subscription_id,),
+        )
+        revoke_conn.commit()
+        revoke_conn.close()
+        return None
+
+    monkeypatch.setattr(
+        e["app"], "_require_feature_access", revoke_after_route_preflight
+    )
+    principal = e["app"].app.test_client()
+    principal_csrf = login(principal, e["users"]["Principal"])
+    denied = _decide_leave(
+        principal, principal_csrf, request_id, "approved"
+    )
+
+    assert denied.status_code == 403
+    assert denied.get_json() == {"error": "subscription_required"}
+    verify = init_db(e["path"])
+    request_row = verify.execute(
+        "SELECT status FROM leave_requests WHERE id=?", (request_id,)
+    ).fetchone()
+    approval_rows = verify.execute(
+        "SELECT decision, approver_id FROM leave_approvals WHERE leave_request_id=?",
+        (request_id,),
+    ).fetchall()
+    assert request_row["status"] == "pending"
+    assert len(approval_rows) == 1
+    assert approval_rows[0]["decision"] == "pending"
+    assert approval_rows[0]["approver_id"] is None
+    assert verify.execute(
+        "SELECT COUNT(*) FROM audit_log "
+        "WHERE action_type='school_leave_approval_decided' AND entity_id=?",
+        (request_id,),
+    ).fetchone()[0] == 0
+    verify.close()
