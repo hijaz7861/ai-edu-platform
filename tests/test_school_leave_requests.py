@@ -932,9 +932,12 @@ def test_leave_submission_rechecks_entitlement_after_route_preflight(leave_env, 
     monkeypatch.setenv("APP_ENV", "production")
     monkeypatch.setattr(e["app"], "allow_request", lambda *args, **kwargs: True)
 
+    original_preflight = e["app"]._require_feature_access
+
     def revoke_after_route_preflight(institution_id, feature):
         assert institution_id == e["tenant_a"]
         assert feature == "leave_management"
+        assert original_preflight(institution_id, feature) is None
         revoke_conn = init_db(e["path"])
         revoke_conn.execute(
             "UPDATE institution_subscriptions SET status='suspended' WHERE id=?",
@@ -978,8 +981,8 @@ def test_leave_submission_rechecks_entitlement_after_route_preflight(leave_env, 
     ).fetchone()[0] == 0
     assert verify.execute(
         "SELECT COUNT(*) FROM audit_log "
-        "WHERE action_type='school_leave_request_created' "
-        "AND after_state LIKE '%2028-06-01%'"
+        "WHERE action_type='school_leave_request_created' AND institution_id=?",
+        (e["tenant_a"],),
     ).fetchone()[0] == 0
     verify.close()
 
@@ -1022,9 +1025,12 @@ def test_leave_approval_rechecks_entitlement_after_route_preflight(leave_env, mo
     monkeypatch.setenv("APP_ENV", "production")
     monkeypatch.setattr(e["app"], "allow_request", lambda *args, **kwargs: True)
 
+    original_preflight = e["app"]._require_feature_access
+
     def revoke_after_route_preflight(institution_id, feature):
         assert institution_id == e["tenant_a"]
         assert feature == "leave_management"
+        assert original_preflight(institution_id, feature) is None
         revoke_conn = init_db(e["path"])
         revoke_conn.execute(
             "UPDATE institution_subscriptions SET status='suspended' WHERE id=?",
