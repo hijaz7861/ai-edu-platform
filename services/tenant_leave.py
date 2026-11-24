@@ -3,15 +3,36 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import uuid
 from datetime import date, datetime, timedelta, timezone
 
 from services import identity
+from services.licensing import feature_allowed
 
 
 class LeaveAuthorizationError(PermissionError):
     """The current school identity is not allowed to submit leave requests."""
+
+
+class LeaveEntitlementError(LeaveAuthorizationError):
+    """The institution's current subscription does not grant leave management."""
+
+
+def _entitlements_enforced():
+    return (
+        os.environ.get("APP_ENV", "").strip().lower() == "production"
+        or os.environ.get("ENFORCE_ENTITLEMENTS", "0") == "1"
+    )
+
+
+def _require_leave_entitlement(conn, institution_id):
+    """Recheck commercial access inside the caller's write transaction."""
+    if _entitlements_enforced() and not feature_allowed(
+        conn, institution_id, "leave_management"
+    ):
+        raise LeaveEntitlementError("subscription_required")
 
 
 class LeaveIdempotencyConflict(ValueError):
@@ -115,6 +136,7 @@ def create_school_leave_request(
             conn, user_id=actor_id, institution_id=institution_id
         ):
             raise LeaveAuthorizationError("active_tenant_identity_required")
+        _require_leave_entitlement(conn, institution_id)
         permissions = identity.institution_permissions(
             conn, user_id=actor_id, institution_id=institution_id
         )
@@ -296,6 +318,7 @@ def decide_school_leave_approval(
             conn, user_id=actor_id, institution_id=institution_id
         ):
             raise LeaveAuthorizationError("active_tenant_identity_required")
+        _require_leave_entitlement(conn, institution_id)
         permissions = identity.institution_permissions(
             conn, user_id=actor_id, institution_id=institution_id
         )
