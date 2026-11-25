@@ -160,3 +160,25 @@ by tenant, entitlement and role-negative tests.
 - This serializes the entitlement decision with SQLite writers: a subscription suspension/expiry committed before the write transaction is observed and denies the operation; a concurrent writer cannot change the subscription until the leave transaction completes.
 - The service raises `LeaveEntitlementError`, which maps to `403 subscription_required`. Denial occurs before idempotency replay or any leave/approval/audit mutation.
 - Regression tests revoke the subscription after route preflight but before the service transaction and verify that neither a leave request nor an approval decision/audit event is persisted.
+
+## Transactional authorization for paid tenant reads
+
+The following paid read routes now run active identity validation, institution-role
+permission checks, subscription entitlement checks, and the protected SELECT in one
+SQLite read transaction:
+
+- GET /api/school/classes
+- GET /api/school/question-banks
+- GET /api/school/exam-blueprints
+- GET /api/school/attendance
+- GET /api/school/leave-requests
+- GET /api/school/teacher/attendance
+- GET /api/school/teacher/leave-requests
+- GET /api/school/jobs/{job_id} (including each resource entitlement in the job payload)
+
+The first identity SELECT establishes the read snapshot. A revocation committed before
+that snapshot is denied; identity, role, entitlement and returned rows are then read
+from one consistent database version. The helper fails closed on an already-open
+caller transaction, invalid identity/permission input, missing entitlement, or a
+transaction ended by the caller. It is a SQLite single-database consistency boundary,
+not a claim of distributed transaction or multi-host queue support.

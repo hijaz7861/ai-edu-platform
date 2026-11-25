@@ -40,6 +40,10 @@ from services.tenant_classes import (
     SchoolClassEntitlementError, SchoolClassCampusNotFound,
     SchoolClassPersistenceError,
 )
+from services.tenant_read import (
+    tenant_read_transaction, TenantReadIdentityError,
+    TenantReadPermissionError, TenantReadEntitlementError,
+)
 from providers.base import get_default_registry
 from dashboard_api import dashboard_api
 
@@ -637,71 +641,91 @@ def school_create_class():
     }), 201
 
 
+
 @app.get("/api/school/classes")
 def school_classes():
-    access_error = _require_feature_access(session["institution_id"], "class_management")
-    if access_error:
-        return access_error
-    permissions = identity.institution_permissions(
-        get_db(), user_id=session["user_id"],
-        institution_id=session["institution_id"],
-    )
-    # Academic Coordinators need read access to classes to perform their
-    # institution-scoped curriculum-management role.
-    if not ({"*", "manage_institution", "view_all_reports", "manage_curriculum"} & permissions):
-        return err("permission_denied", 403)
-    rows = core.scoped_query(get_db(), "classes", session["institution_id"])
+    """List classes only after identity, permission, entitlement and query share one snapshot."""
+    institution_id = session["institution_id"]
+    conn = get_db()
+    try:
+        with tenant_read_transaction(
+            conn,
+            user_id=session["user_id"],
+            institution_id=institution_id,
+            required_permissions={
+                "manage_institution", "view_all_reports", "manage_curriculum"
+            },
+            feature="class_management",
+        ):
+            rows = core.scoped_query(conn, "classes", institution_id)
+    except (
+        TenantReadIdentityError, TenantReadPermissionError,
+        TenantReadEntitlementError,
+    ) as exc:
+        return _tenant_read_error_response(exc)
     return jsonify({"classes": [dict(row) for row in rows]})
-
 
 
 @app.get("/api/school/question-banks")
 def school_question_banks():
-    """List only the authenticated institution's question-bank metadata."""
+    """List only this tenant's question-bank metadata in an authorized read snapshot."""
     institution_id = session["institution_id"]
-    permissions = identity.institution_permissions(
-        get_db(), user_id=session["user_id"], institution_id=institution_id
-    )
-    if not ({"*", "manage_institution", "manage_curriculum", "verify_questions"} & permissions):
-        return err("permission_denied", 403)
-    access_error = _require_feature_access(institution_id, "question_bank_analysis")
-    if access_error:
-        return access_error
-
-    rows = get_db().execute(
-        """SELECT id, name, status
-           FROM question_banks
-           WHERE institution_id = ?
-           ORDER BY name, id
-           LIMIT 200""",
-        (institution_id,),
-    ).fetchall()
+    conn = get_db()
+    try:
+        with tenant_read_transaction(
+            conn,
+            user_id=session["user_id"],
+            institution_id=institution_id,
+            required_permissions={
+                "manage_institution", "manage_curriculum", "verify_questions"
+            },
+            feature="question_bank_analysis",
+        ):
+            rows = conn.execute(
+                """SELECT id, name, status
+                   FROM question_banks
+                   WHERE institution_id = ?
+                   ORDER BY name, id
+                   LIMIT 200""",
+                (institution_id,),
+            ).fetchall()
+    except (
+        TenantReadIdentityError, TenantReadPermissionError,
+        TenantReadEntitlementError,
+    ) as exc:
+        return _tenant_read_error_response(exc)
     return jsonify({"question_banks": [dict(row) for row in rows]})
 
 
 @app.get("/api/school/exam-blueprints")
 def school_exam_blueprints():
-    """List only the authenticated institution's exam-blueprint metadata."""
+    """List only this tenant's exam-blueprint metadata in an authorized read snapshot."""
     institution_id = session["institution_id"]
-    permissions = identity.institution_permissions(
-        get_db(), user_id=session["user_id"], institution_id=institution_id
-    )
-    if not ({"*", "manage_institution", "manage_curriculum", "publish_exam"} & permissions):
-        return err("permission_denied", 403)
-    access_error = _require_feature_access(institution_id, "exam_generation")
-    if access_error:
-        return access_error
-
-    rows = get_db().execute(
-        """SELECT id, total_marks, duration_minutes, language, status, created_at
-           FROM exam_blueprints
-           WHERE institution_id = ?
-           ORDER BY created_at DESC, id
-           LIMIT 200""",
-        (institution_id,),
-    ).fetchall()
+    conn = get_db()
+    try:
+        with tenant_read_transaction(
+            conn,
+            user_id=session["user_id"],
+            institution_id=institution_id,
+            required_permissions={
+                "manage_institution", "manage_curriculum", "publish_exam"
+            },
+            feature="exam_generation",
+        ):
+            rows = conn.execute(
+                """SELECT id, total_marks, duration_minutes, language, status, created_at
+                   FROM exam_blueprints
+                   WHERE institution_id = ?
+                   ORDER BY created_at DESC, id
+                   LIMIT 200""",
+                (institution_id,),
+            ).fetchall()
+    except (
+        TenantReadIdentityError, TenantReadPermissionError,
+        TenantReadEntitlementError,
+    ) as exc:
+        return _tenant_read_error_response(exc)
     return jsonify({"exam_blueprints": [dict(row) for row in rows]})
-
 
 @app.get("/api/school/teacher/me")
 def school_teacher_me():
@@ -714,34 +738,42 @@ def school_teacher_me():
     return jsonify({"teacher": teacher})
 
 
+
 @app.get("/api/school/teacher/attendance")
 def school_teacher_attendance():
-    """Return only the authenticated teacher's own attendance metadata."""
+    """Return only the linked teacher's attendance under one authorized read snapshot."""
     if set(request.args.keys()) - {"institution_id"}:
         return err("unsupported_query_parameter", 400)
     institution_id = session["institution_id"]
-    teacher = identity.linked_teacher_for_school_user(
-        get_db(), user_id=session["user_id"], institution_id=institution_id
-    )
-    permissions = identity.institution_permissions(
-        get_db(), user_id=session["user_id"], institution_id=institution_id
-    )
-    if teacher is None or "self_attendance" not in permissions:
-        return err("permission_denied", 403)
-    access_error = _require_feature_access(institution_id, "attendance")
-    if access_error:
-        return access_error
-    rows = get_db().execute(
-        """SELECT ae.id, ae.event_type, ae.timestamp, ae.status, ae.created_at
-           FROM attendance_events ae
-           JOIN teachers t ON t.id = ae.teacher_id
-           WHERE ae.institution_id = ? AND ae.teacher_id = ?
-             AND t.institution_id = ? AND t.status = 'active'
-           ORDER BY ae.created_at DESC, ae.id DESC LIMIT 100""",
-        (institution_id, teacher["id"], institution_id),
-    ).fetchall()
+    conn = get_db()
+    try:
+        with tenant_read_transaction(
+            conn,
+            user_id=session["user_id"],
+            institution_id=institution_id,
+            required_permissions={"self_attendance"},
+            feature="attendance",
+        ):
+            teacher = identity.linked_teacher_for_school_user(
+                conn, user_id=session["user_id"], institution_id=institution_id
+            )
+            if teacher is None:
+                return err("permission_denied", 403)
+            rows = conn.execute(
+                """SELECT ae.id, ae.event_type, ae.timestamp, ae.status, ae.created_at
+                   FROM attendance_events ae
+                   JOIN teachers t ON t.id = ae.teacher_id
+                   WHERE ae.institution_id = ? AND ae.teacher_id = ?
+                     AND t.institution_id = ? AND t.status = 'active'
+                   ORDER BY ae.created_at DESC, ae.id DESC LIMIT 100""",
+                (institution_id, teacher["id"], institution_id),
+            ).fetchall()
+    except (
+        TenantReadIdentityError, TenantReadPermissionError,
+        TenantReadEntitlementError,
+    ) as exc:
+        return _tenant_read_error_response(exc)
     return jsonify({"attendance_events": [dict(row) for row in rows]})
-
 
 @app.post("/api/school/teacher/attendance/events")
 def school_teacher_create_attendance_event():
@@ -792,36 +824,44 @@ def school_teacher_create_attendance_event():
     return jsonify(result), 201 if result["created"] else 200
 
 
+
 @app.get("/api/school/teacher/leave-requests")
 def school_teacher_leave_requests():
-    """Return only the authenticated teacher's own leave-request metadata."""
+    """Return only the linked teacher's leave metadata under one authorized snapshot."""
     if set(request.args.keys()) - {"institution_id"}:
         return err("unsupported_query_parameter", 400)
     institution_id = session["institution_id"]
-    teacher = identity.linked_teacher_for_school_user(
-        get_db(), user_id=session["user_id"], institution_id=institution_id
-    )
-    permissions = identity.institution_permissions(
-        get_db(), user_id=session["user_id"], institution_id=institution_id
-    )
-    if teacher is None or "self_leave_request" not in permissions:
-        return err("permission_denied", 403)
-    access_error = _require_feature_access(institution_id, "leave_management")
-    if access_error:
-        return access_error
-    rows = get_db().execute(
-        """SELECT lr.id, lt.name AS leave_type_name, lr.start_date,
-                  lr.end_date, lr.status, lr.created_at
-           FROM leave_requests lr
-           JOIN teachers t ON t.id = lr.teacher_id
-           JOIN leave_types lt ON lt.id = lr.leave_type_id
-           WHERE t.id = ? AND t.institution_id = ?
-             AND lt.institution_id = ?
-           ORDER BY lr.created_at DESC, lr.id DESC LIMIT 100""",
-        (teacher["id"], institution_id, institution_id),
-    ).fetchall()
+    conn = get_db()
+    try:
+        with tenant_read_transaction(
+            conn,
+            user_id=session["user_id"],
+            institution_id=institution_id,
+            required_permissions={"self_leave_request"},
+            feature="leave_management",
+        ):
+            teacher = identity.linked_teacher_for_school_user(
+                conn, user_id=session["user_id"], institution_id=institution_id
+            )
+            if teacher is None:
+                return err("permission_denied", 403)
+            rows = conn.execute(
+                """SELECT lr.id, lt.name AS leave_type_name, lr.start_date,
+                          lr.end_date, lr.status, lr.created_at
+                   FROM leave_requests lr
+                   JOIN teachers t ON t.id = lr.teacher_id
+                   JOIN leave_types lt ON lt.id = lr.leave_type_id
+                   WHERE t.id = ? AND t.institution_id = ?
+                     AND lt.institution_id = ?
+                   ORDER BY lr.created_at DESC, lr.id DESC LIMIT 100""",
+                (teacher["id"], institution_id, institution_id),
+            ).fetchall()
+    except (
+        TenantReadIdentityError, TenantReadPermissionError,
+        TenantReadEntitlementError,
+    ) as exc:
+        return _tenant_read_error_response(exc)
     return jsonify({"leave_requests": [dict(row) for row in rows]})
-
 
 @app.post("/api/school/teacher/leave-requests")
 def school_teacher_create_leave_request():
@@ -913,23 +953,11 @@ def school_revoke_teacher_identity(teacher_id):
     return jsonify(result)
 
 
+
 @app.get("/api/school/attendance")
 def school_attendance():
-    """List bounded teacher-attendance metadata for the authenticated tenant."""
+    """List bounded tenant attendance metadata in one authorized read snapshot."""
     institution_id = session["institution_id"]
-    permissions = identity.institution_permissions(
-        get_db(), user_id=session["user_id"], institution_id=institution_id
-    )
-    if not ({"*", "manage_institution", "view_all_reports", "manage_attendance_policy"} & permissions):
-        return err("permission_denied", 403)
-
-    access_error = _require_feature_access(institution_id, "attendance")
-    if access_error:
-        return access_error
-
-    # Tenant selection is never accepted from the client. The legacy
-    # institution_id selector is ignored for compatibility; other filters are
-    # explicit and validated so callers cannot smuggle SQL fragments/options.
     unsupported = set(request.args.keys()) - {"date", "institution_id"}
     if unsupported:
         return err("unsupported_query_parameter", 400)
@@ -947,22 +975,36 @@ def school_attendance():
             return err("invalid_date", 400)
         date_filter = parsed_date.isoformat()
 
-    sql = """
-        SELECT ae.id, ae.teacher_id, ae.event_type, ae.timestamp,
-               ae.method, ae.status, ae.created_at
-        FROM attendance_events ae
-        JOIN teachers t ON t.id = ae.teacher_id
-        WHERE ae.institution_id = ? AND t.institution_id = ?
-    """
-    params = [institution_id, institution_id]
-    if date_filter is not None:
-        sql += " AND substr(ae.created_at, 1, 10) = ?"
-        params.append(date_filter)
-    sql += " ORDER BY ae.created_at DESC, ae.id DESC LIMIT 200"
-
-    rows = get_db().execute(sql, params).fetchall()
+    conn = get_db()
+    try:
+        with tenant_read_transaction(
+            conn,
+            user_id=session["user_id"],
+            institution_id=institution_id,
+            required_permissions={
+                "manage_institution", "view_all_reports", "manage_attendance_policy"
+            },
+            feature="attendance",
+        ):
+            sql = """
+                SELECT ae.id, ae.teacher_id, ae.event_type, ae.timestamp,
+                       ae.method, ae.status, ae.created_at
+                FROM attendance_events ae
+                JOIN teachers t ON t.id = ae.teacher_id
+                WHERE ae.institution_id = ? AND t.institution_id = ?
+            """
+            params = [institution_id, institution_id]
+            if date_filter is not None:
+                sql += " AND substr(ae.created_at, 1, 10) = ?"
+                params.append(date_filter)
+            sql += " ORDER BY ae.created_at DESC, ae.id DESC LIMIT 200"
+            rows = conn.execute(sql, params).fetchall()
+    except (
+        TenantReadIdentityError, TenantReadPermissionError,
+        TenantReadEntitlementError,
+    ) as exc:
+        return _tenant_read_error_response(exc)
     return jsonify({"attendance_events": [dict(row) for row in rows]})
-
 
 @app.post("/api/school/attendance/events")
 def school_create_attendance_event():
@@ -1009,20 +1051,11 @@ def school_create_attendance_event():
     return jsonify(result), 201 if result["created"] else 200
 
 
+
 @app.get("/api/school/leave-requests")
 def school_leave_requests():
-    """List bounded leave-request metadata after checking both tenant relationships."""
+    """List bounded tenant leave metadata in one authorized read snapshot."""
     institution_id = session["institution_id"]
-    permissions = identity.institution_permissions(
-        get_db(), user_id=session["user_id"], institution_id=institution_id
-    )
-    if not ({"*", "manage_institution", "approve_leave", "view_all_reports"} & permissions):
-        return err("permission_denied", 403)
-
-    access_error = _require_feature_access(institution_id, "leave_management")
-    if access_error:
-        return access_error
-
     unsupported = set(request.args.keys()) - {"status", "institution_id"}
     if unsupported:
         return err("unsupported_query_parameter", 400)
@@ -1035,26 +1068,37 @@ def school_leave_requests():
         if status_filter not in {"pending", "approved", "rejected"}:
             return err("invalid_status", 400)
 
-    # A leave request has no direct institution_id column. Require both its
-    # teacher and leave type to belong to the authenticated institution so
-    # inconsistent legacy rows cannot bridge tenants.
-    sql = """
-        SELECT lr.id, lr.teacher_id, lt.name AS leave_type_name,
-               lr.start_date, lr.end_date, lr.status, lr.created_at
-        FROM leave_requests lr
-        JOIN teachers t ON t.id = lr.teacher_id
-        JOIN leave_types lt ON lt.id = lr.leave_type_id
-        WHERE t.institution_id = ? AND lt.institution_id = ?
-    """
-    params = [institution_id, institution_id]
-    if status_filter is not None:
-        sql += " AND lr.status = ?"
-        params.append(status_filter)
-    sql += " ORDER BY lr.created_at DESC, lr.id DESC LIMIT 200"
-
-    rows = get_db().execute(sql, params).fetchall()
+    conn = get_db()
+    try:
+        with tenant_read_transaction(
+            conn,
+            user_id=session["user_id"],
+            institution_id=institution_id,
+            required_permissions={
+                "manage_institution", "approve_leave", "view_all_reports"
+            },
+            feature="leave_management",
+        ):
+            sql = """
+                SELECT lr.id, lr.teacher_id, lt.name AS leave_type_name,
+                       lr.start_date, lr.end_date, lr.status, lr.created_at
+                FROM leave_requests lr
+                JOIN teachers t ON t.id = lr.teacher_id
+                JOIN leave_types lt ON lt.id = lr.leave_type_id
+                WHERE t.institution_id = ? AND lt.institution_id = ?
+            """
+            params = [institution_id, institution_id]
+            if status_filter is not None:
+                sql += " AND lr.status = ?"
+                params.append(status_filter)
+            sql += " ORDER BY lr.created_at DESC, lr.id DESC LIMIT 200"
+            rows = conn.execute(sql, params).fetchall()
+    except (
+        TenantReadIdentityError, TenantReadPermissionError,
+        TenantReadEntitlementError,
+    ) as exc:
+        return _tenant_read_error_response(exc)
     return jsonify({"leave_requests": [dict(row) for row in rows]})
-
 
 @app.post("/api/school/leave-requests")
 def school_create_leave_request():
@@ -1182,26 +1226,37 @@ def school_create_job():
     return jsonify({"id": job_id, "status": job["status"]}), 202 if created else 200
 
 
+
 @app.get("/api/school/jobs/<job_id>")
 def school_get_job(job_id):
-    """Return only a job belonging to the authenticated institution."""
-    permissions = identity.institution_permissions(
-        get_db(), user_id=session["user_id"],
-        institution_id=session["institution_id"],
-    )
-    if not ({"*", "manage_institution", "view_all_reports"} & permissions):
-        return err("permission_denied", 403)
-    job = get_tenant_job(
-        get_db(), job_id=job_id, institution_id=session["institution_id"]
-    )
-    if job is None:
-        return err("job_not_found", 404)
-    if not tenant_job_entitlements_allowed(
-        get_db(), job_id=job_id, institution_id=session["institution_id"]
-    ):
-        return err("subscription_required", 403)
+    """Return only a tenant-owned job after transactional identity, permission and resource checks."""
+    institution_id = session["institution_id"]
+    conn = get_db()
+    try:
+        with tenant_read_transaction(
+            conn,
+            user_id=session["user_id"],
+            institution_id=institution_id,
+            required_permissions={"manage_institution", "view_all_reports"},
+        ):
+            job = get_tenant_job(
+                conn, job_id=job_id, institution_id=institution_id
+            )
+            if job is None:
+                return err("job_not_found", 404)
+            # Resource-specific subscription checks must share the same read
+            # snapshot as the job/result query; never disclose a result based
+            # on an entitlement that changed between two separate reads.
+            if not tenant_job_entitlements_allowed(
+                conn, job_id=job_id, institution_id=institution_id
+            ):
+                return err("subscription_required", 403)
+    except (
+        TenantReadIdentityError, TenantReadPermissionError,
+        TenantReadEntitlementError,
+    ) as exc:
+        return _tenant_read_error_response(exc)
     return jsonify(job)
-
 
 @app.post("/api/admin/school-users")
 def admin_create_school_user():
@@ -1272,6 +1327,16 @@ _bootstrap_once()
 
 def err(message, code=400):
     return jsonify({"error": message}), code
+
+
+def _tenant_read_error_response(exc):
+    """Map transactional tenant-read denials without exposing entitlement state."""
+    if isinstance(exc, TenantReadIdentityError):
+        session.clear()
+        return err("school_identity_inactive", 401)
+    if isinstance(exc, TenantReadEntitlementError):
+        return err("subscription_required", 403)
+    return err("permission_denied", 403)
 
 
 def _require_feature_access(institution_id, feature):
