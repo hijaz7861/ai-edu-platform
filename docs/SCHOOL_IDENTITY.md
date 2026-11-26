@@ -213,3 +213,8 @@ Academic Coordinator, Examiner or HR/Attendance Officer accounts. Those
 staff-role grants remain platform-admin provisioned until a separate
 delegation/approval model is reviewed. User invitations, password recovery,
 email verification and MFA are still outstanding.
+
+
+For tenant-provisioning privacy, an email address already registered anywhere
+returns the same generic `409 teacher_identity_conflict` response; the endpoint
+does not disclose which institution owns the existing account.
