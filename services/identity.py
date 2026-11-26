@@ -18,7 +18,14 @@ _ALLOWED_INSTITUTION_ROLES = frozenset({
 _EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 
 
-def create_school_user(conn, *, email, password, institution_id, role_name, granted_by, teacher_id=None):
+class SchoolUserAuthorizationError(PermissionError):
+    """The tenant actor is no longer authorized to provision a teacher identity."""
+
+
+def create_school_user(
+    conn, *, email, password, institution_id, role_name, granted_by,
+    teacher_id=None, actor_id=None,
+):
     """Create an institution user; Teacher Portal accounts require one active teacher link."""
     email = email.strip().lower() if isinstance(email, str) else ""
     if len(email) > 254 or not _EMAIL_RE.fullmatch(email):
@@ -35,11 +42,33 @@ def create_school_user(conn, *, email, password, institution_id, role_name, gran
         teacher_id = teacher_id.strip()
     elif teacher_id is not None:
         raise ValueError("teacher_link_only_for_teacher_portal")
+    if actor_id is not None:
+        if not isinstance(actor_id, str) or not actor_id.strip():
+            raise SchoolUserAuthorizationError("active_tenant_identity_required")
+        # Tenant self-service provisioning is deliberately limited to the
+        # least-privilege Teacher Portal role. Staff roles with broader
+        # permissions remain platform-admin provisioned until a reviewed
+        # delegation model exists.
+        if role_name != "Teacher Portal":
+            raise SchoolUserAuthorizationError("tenant_role_provisioning_not_allowed")
+        if granted_by != actor_id:
+            raise SchoolUserAuthorizationError("provisioning_actor_mismatch")
     if conn.in_transaction:
         raise ValueError("identity_creation_requires_clean_connection")
 
     conn.execute("BEGIN IMMEDIATE")
     try:
+        if actor_id is not None:
+            if not active_tenant_identity(
+                conn, user_id=actor_id, institution_id=institution_id
+            ):
+                raise SchoolUserAuthorizationError("active_tenant_identity_required")
+            permissions = institution_permissions(
+                conn, user_id=actor_id, institution_id=institution_id
+            )
+            if "*" not in permissions and "manage_users" not in permissions:
+                raise SchoolUserAuthorizationError("permission_denied")
+
         institution = conn.execute(
             "SELECT id FROM institutions WHERE id = ? AND status = 'active'",
             (institution_id,),
