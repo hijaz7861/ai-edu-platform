@@ -1297,7 +1297,9 @@ def school_create_teacher_identity():
         if str(exc) == "teacher_identity_unavailable":
             return err("teacher_identity_not_found", 404)
         if str(exc) == "email_already_exists":
-            return err("email_already_exists", 409)
+            # Do not disclose whether an address is already registered in a
+            # different institution.
+            return err("teacher_identity_conflict", 409)
         return err(str(exc), 400)
     except Exception:
         app.logger.exception("Failed to provision tenant teacher identity")
