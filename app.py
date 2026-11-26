@@ -206,6 +206,7 @@ _SCHOOL_API_ROUTE_METHODS = frozenset({
     ("school_teacher_leave_requests", "GET"),
     ("school_teacher_create_leave_request", "POST"),
     ("school_revoke_teacher_identity", "POST"),
+    ("school_create_teacher_identity", "POST"),
     ("school_classes", "GET"),
     ("school_create_class", "POST"),
     ("school_question_banks", "GET"),
@@ -231,6 +232,7 @@ _SCHOOL_ROUTE_PERMISSION_REQUIREMENTS = {
     ("school_teacher_leave_requests", "GET"): frozenset({"self_leave_request"}),
     ("school_teacher_create_leave_request", "POST"): frozenset({"self_leave_request"}),
     ("school_revoke_teacher_identity", "POST"): frozenset({"manage_users"}),
+    ("school_create_teacher_identity", "POST"): frozenset({"manage_users"}),
     ("school_classes", "GET"): frozenset({"manage_institution", "view_all_reports", "manage_curriculum"}),
     ("school_create_class", "POST"): frozenset({"manage_institution"}),
     ("school_question_banks", "GET"): frozenset({"manage_institution", "manage_curriculum", "verify_questions"}),
@@ -274,6 +276,7 @@ _ROUTE_ACCESS_POLICIES = {
     "school_teacher_leave_requests": ("school_user", frozenset({"GET"})),
     "school_teacher_create_leave_request": ("school_user", frozenset({"POST"})),
     "school_revoke_teacher_identity": ("school_user", frozenset({"POST"})),
+    "school_create_teacher_identity": ("school_user", frozenset({"POST"})),
     "school_classes": ("school_user", frozenset({"GET"})),
     "school_create_class": ("school_user", frozenset({"POST"})),
     "school_question_banks": ("school_user", frozenset({"GET"})),
@@ -1257,6 +1260,49 @@ def school_get_job(job_id):
     ) as exc:
         return _tenant_read_error_response(exc)
     return jsonify(job)
+
+@app.post("/api/school/teacher-identities")
+def school_create_teacher_identity():
+    """Let an authorized institution admin provision only a same-tenant Teacher Portal identity."""
+    body = request.get_json(silent=True)
+    if body is None:
+        if request.data:
+            return err("invalid_json", 400)
+        body = {}
+    allowed = {"email", "password", "teacher_id"}
+    if not isinstance(body, dict) or set(body) - allowed:
+        return err("unsupported_payload", 400)
+    if not {"email", "password", "teacher_id"}.issubset(body):
+        return err("required_fields_missing", 400)
+
+    actor_id = session.get("user_id")
+    institution_id = session.get("institution_id")
+    try:
+        created = identity.create_school_user(
+            get_db(),
+            email=body.get("email"),
+            password=body.get("password"),
+            institution_id=institution_id,
+            role_name="Teacher Portal",
+            teacher_id=body.get("teacher_id"),
+            granted_by=actor_id,
+            actor_id=actor_id,
+        )
+    except identity.SchoolUserAuthorizationError as exc:
+        code = str(exc)
+        if code == "active_tenant_identity_required":
+            return err("school_identity_inactive", 401)
+        return err("permission_denied", 403)
+    except ValueError as exc:
+        if str(exc) == "teacher_identity_unavailable":
+            return err("teacher_identity_not_found", 404)
+        if str(exc) == "email_already_exists":
+            return err("email_already_exists", 409)
+        return err(str(exc), 400)
+    except Exception:
+        app.logger.exception("Failed to provision tenant teacher identity")
+        return err("teacher_identity_provisioning_failed", 500)
+    return jsonify(created), 201
 
 @app.post("/api/admin/school-users")
 def admin_create_school_user():
