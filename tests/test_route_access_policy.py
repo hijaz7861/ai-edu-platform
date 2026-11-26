@@ -39,6 +39,7 @@ def test_every_registered_route_method_has_an_explicit_access_policy():
         ("school_teacher_leave_requests", "GET", "school_user"),
         ("school_teacher_create_leave_request", "POST", "school_user"),
         ("school_revoke_teacher_identity", "POST", "school_user"),
+        ("school_create_teacher_identity", "POST", "school_user"),
         ("api_status", "GET", "public"),
         ("logout", "POST", "authenticated"),
         ("future_blueprint.export_all", "GET", "unclassified"),
@@ -83,6 +84,7 @@ def test_seeded_institution_roles_match_the_explicit_school_route_matrix():
         ("school_teacher_leave_requests", "GET"): {"Teacher Portal"},
         ("school_teacher_create_leave_request", "POST"): {"Teacher Portal"},
         ("school_revoke_teacher_identity", "POST"): {"Institution Admin"},
+        ("school_create_teacher_identity", "POST"): {"Institution Admin"},
         ("school_classes", "GET"): {
             "Institution Admin", "Principal", "Academic Coordinator",
         },
@@ -182,6 +184,7 @@ def test_school_route_permission_matrix_denies_each_unassigned_role(
         ("school_teacher_leave_requests", "GET", "/api/school/teacher/leave-requests", {"Teacher Portal"}),
         ("school_teacher_create_leave_request", "POST", "/api/school/teacher/leave-requests", {"Teacher Portal"}),
         ("school_revoke_teacher_identity", "POST", f"/api/school/teachers/{env['teacher_id']}/identity/revoke", {"Institution Admin"}),
+        ("school_create_teacher_identity", "POST", "/api/school/teacher-identities", {"Institution Admin"}),
         ("school_classes", "GET", "/api/school/classes", {"Institution Admin", "Principal", "Academic Coordinator"}),
         ("school_create_class", "POST", "/api/school/classes", {"Institution Admin"}),
         ("school_question_banks", "GET", "/api/school/question-banks", {"Institution Admin", "Academic Coordinator", "Examiner"}),
