@@ -932,3 +932,29 @@ def test_teacher_identity_provisioning_requires_csrf_and_rolls_back_on_audit_fai
     assert conn.execute("SELECT COUNT(*) FROM users WHERE email=?", (email,)).fetchone()[0] == 0
     assert conn.execute("SELECT user_id FROM teachers WHERE id=?", (new_teacher,)).fetchone()["user_id"] is None
     conn.close()
+
+
+def test_tenant_teacher_provisioning_does_not_disclose_cross_tenant_email_existence(teacher_env):
+    e = teacher_env
+    conn = init_db(e["path"])
+    new_teacher = core.create_teacher(
+        conn, None, e["tenant_a"], "EMAIL-" + uuid.uuid4().hex[:8]
+    )
+    conn.close()
+    client = e["app"].app.test_client()
+    csrf = login(client, e["admin_a"])
+    response = client.post(
+        "/api/school/teacher-identities",
+        json={
+            "email": e["user_b"]["email"],
+            "password": "a unique teacher portal password",
+            "teacher_id": new_teacher,
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert response.status_code == 409
+    assert response.get_json() == {"error": "teacher_identity_conflict"}
+    conn = init_db(e["path"])
+    assert conn.execute("SELECT user_id FROM teachers WHERE id=?", (new_teacher,)).fetchone()["user_id"] is None
+    assert conn.execute("SELECT COUNT(*) FROM users WHERE email=?", (e["user_b"]["email"],)).fetchone()[0] == 1
+    conn.close()
