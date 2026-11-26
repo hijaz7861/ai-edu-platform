@@ -4,13 +4,13 @@
 
 - School users are stored in the existing `users` table with a Werkzeug scrypt password hash; plaintext passwords are never persisted.
 - The database initialization applies an additive `password_hash` migration to existing SQLite databases.
-- A platform administrator can provision a school user through `POST /api/admin/school-users` with a JSON body containing `email`, `password`, `institution_id`, and `role_name`. This endpoint is protected by the existing platform-admin session and CSRF middleware.
+- A platform administrator can provision any supported school role through `POST /api/admin/school-users`. An active Institution Admin with the institution-scoped `manage_users` permission can provision only a least-privilege Teacher Portal identity through `POST /api/school/teacher-identities`; the service revalidates actor, tenant and permission inside the same `BEGIN IMMEDIATE` transaction as account/link/audit creation. Tenant self-service cannot grant staff roles or accept a client-selected institution/actor.
 - Supported institution-scoped roles are Institution Admin, Principal, Academic Coordinator, Examiner, HR/Attendance Officer, and the least-privilege Teacher Portal role. The existing class-scoped Teacher role is distinct and is not accepted as a school-login role. Platform-wide, class-scoped, and department-scoped role assignments are deliberately rejected until their route authorization rules are implemented.
 - School users sign in through the School staff form at `/auth/school-login`. CSRF protection and the existing persistent login throttling apply.
-- The school portal exposes `GET /api/school/me`, `GET /api/school/classes`, `POST /api/school/classes`, `GET /api/school/question-banks`, `GET /api/school/exam-blueprints`, `GET /api/school/attendance`, `GET /api/school/leave-requests`, `POST /api/school/leave-requests`, `GET /api/school/teacher/me`, `GET /api/school/teacher/attendance`, `POST /api/school/teacher/attendance/events`, `GET /api/school/teacher/leave-requests`, `POST /api/school/teacher/leave-requests`, `POST /api/school/teachers/<teacher_id>/identity/revoke`, `POST /api/school/jobs`, and `GET /api/school/jobs/<job_id>`. Every route/method is explicitly allowlisted. Class, question-bank and exam-blueprint reads filter by the institution stored in the authenticated database identity, never a request-supplied tenant selector. Question-bank metadata requires `manage_institution`, `manage_curriculum`, or `verify_questions` plus the `question_bank_analysis` entitlement in production. Exam-blueprint metadata requires `manage_institution`, `manage_curriculum`, or `publish_exam` plus the `exam_generation` entitlement in production. Responses expose metadata only, not question content, answers, source text or generated exam contents. Class creation requires the institution-scoped `manage_institution` permission and `class_management` entitlement, revalidates both inside `BEGIN IMMEDIATE`, verifies campus ownership, and commits any default-campus creation, class row and audit event atomically. An audit failure rolls the whole write back.
+- The school portal exposes `GET /api/school/me`, `GET /api/school/classes`, `POST /api/school/classes`, `GET /api/school/question-banks`, `GET /api/school/exam-blueprints`, `GET /api/school/attendance`, `GET /api/school/leave-requests`, `POST /api/school/leave-requests`, `GET /api/school/teacher/me`, `GET /api/school/teacher/attendance`, `POST /api/school/teacher/attendance/events`, `GET /api/school/teacher/leave-requests`, `POST /api/school/teacher/leave-requests`, `POST /api/school/teachers/<teacher_id>/identity/revoke`, `POST /api/school/teacher-identities`, `POST /api/school/jobs`, and `GET /api/school/jobs/<job_id>`. Every route/method is explicitly allowlisted. Class, question-bank and exam-blueprint reads filter by the institution stored in the authenticated database identity, never a request-supplied tenant selector. Question-bank metadata requires `manage_institution`, `manage_curriculum`, or `verify_questions` plus the `question_bank_analysis` entitlement in production. Exam-blueprint metadata requires `manage_institution`, `manage_curriculum`, or `publish_exam` plus the `exam_generation` entitlement in production. Responses expose metadata only, not question content, answers, source text or generated exam contents. Class creation requires the institution-scoped `manage_institution` permission and `class_management` entitlement, revalidates both inside `BEGIN IMMEDIATE`, verifies campus ownership, and commits any default-campus creation, class row and audit event atomically. An audit failure rolls the whole write back.
 - Each school API request revalidates that the user and institution remain active and that the user still has an institution-scoped role assignment. Authenticated role boundaries run before the development legacy-mode bypass: school sessions are limited to the school portal, public health/authentication routes, and tenant-bound `/api/school/*`; unknown/retired roles cannot reach the platform dashboard or business routes. School logout is POST-only and CSRF-protected. The school API namespace also uses an exact endpoint/method allowlist; new routes and methods are denied until reviewed and added with explicit tenant and role checks. The route audit test compares every registered school endpoint/method against that allowlist.
 
-## Provisioning example
+## Platform-admin provisioning example
 
 Only run as an authenticated platform administrator; include the CSRF token in the `X-CSRF-Token` header.
 
@@ -29,7 +29,7 @@ X-CSRF-Token: <session-csrf-token>
 
 ## Remaining limitations — not launch-ready by itself
 
-This is a bounded first implementation, not a claim of complete production identity management. The 18 currently exposed school route/method pairs now have a centralized, fail-closed any-of permission registry enforced by middleware and an integration matrix across all six supported institution roles. Password recovery, invitation/verification emails, MFA, account lockout policy review, session revocation/versioning, institution-admin user management UI, class/department role enforcement, and tenant-scoped authorization for future school-facing legacy APIs remain outstanding. The regression suite now enumerates every registered Flask route and dashboard blueprint method and denies school-session access outside the explicit school/public allowlist; this is a boundary test, not proof that every platform-admin data query is institution-scoped. Existing legacy APIs continue to be platform-admin-only; they must not be exposed to school sessions until each route has explicit tenant and permission checks. A real production launch still requires full regression CI, deployment-specific secrets, database/backups/restore drills, monitoring, and live staging verification.
+This is a bounded first implementation, not a claim of complete production identity management. The 19 currently exposed school route/method pairs now have a centralized, fail-closed any-of permission registry enforced by middleware and an integration matrix across all six supported institution roles. Password recovery, invitation/verification emails, MFA, account lockout policy review, session revocation/versioning, institution-admin user management UI, class/department role enforcement, and tenant-scoped authorization for future school-facing legacy APIs remain outstanding. The regression suite now enumerates every registered Flask route and dashboard blueprint method and denies school-session access outside the explicit school/public allowlist; this is a boundary test, not proof that every platform-admin data query is institution-scoped. Existing legacy APIs continue to be platform-admin-only; they must not be exposed to school sessions until each route has explicit tenant and permission checks. A real production launch still requires full regression CI, deployment-specific secrets, database/backups/restore drills, monitoring, and live staging verification.
 
 ## Current school API permission matrix
 
@@ -182,3 +182,34 @@ from one consistent database version. The helper fails closed on an already-open
 caller transaction, invalid identity/permission input, missing entitlement, or a
 transaction ended by the caller. It is a SQLite single-database consistency boundary,
 not a claim of distributed transaction or multi-host queue support.
+
+
+## Institution-admin Teacher Portal provisioning
+
+An active Institution Admin may create a Teacher Portal account for one active,
+unlinked teacher in the authenticated institution. The route accepts only
+`email`, `password`, and `teacher_id`; institution, actor and role are
+server-selected. It requires the session CSRF token and the `manage_users`
+permission. The service repeats the identity and permission checks inside the
+write transaction, so a role revocation after middleware cannot create an
+account. Cross-tenant or already-linked teacher IDs return the same 404
+response. Audit insertion is part of the same transaction and failure rolls
+back the user, role assignment and teacher link.
+
+```http
+POST /api/school/teacher-identities
+Content-Type: application/json
+X-CSRF-Token: <session-csrf-token>
+
+{
+  "email": "teacher@example.edu",
+  "password": "<unique password of at least 12 characters>",
+  "teacher_id": "<active unlinked teacher ID in this institution>"
+}
+```
+
+This endpoint intentionally cannot create Institution Admin, Principal,
+Academic Coordinator, Examiner or HR/Attendance Officer accounts. Those
+staff-role grants remain platform-admin provisioned until a separate
+delegation/approval model is reviewed. User invitations, password recovery,
+email verification and MFA are still outstanding.
