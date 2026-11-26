@@ -731,3 +731,204 @@ def test_teacher_identity_revocation_cleans_stale_role_escalation_and_allows_rea
     )["id"] == e["teacher_a"]
     conn.close()
 
+
+
+def test_institution_admin_can_provision_teacher_portal_identity_for_own_tenant(teacher_env):
+    e = teacher_env
+    conn = init_db(e["path"])
+    new_teacher = core.create_teacher(
+        conn, None, e["tenant_a"], "NEW-" + uuid.uuid4().hex[:8]
+    )
+    conn.close()
+
+    client = e["app"].app.test_client()
+    csrf = login(client, e["admin_a"])
+    email = "tenant-provisioned-" + uuid.uuid4().hex[:8] + "@school.example"
+    response = client.post(
+        "/api/school/teacher-identities",
+        json={
+            "email": email,
+            "password": "a unique teacher portal password",
+            "teacher_id": new_teacher,
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert response.status_code == 201, response.get_json()
+    created = response.get_json()
+    assert created["email"] == email
+    assert created["institution_id"] == e["tenant_a"]
+    assert created["role"] == "Teacher Portal"
+    assert created["teacher_id"] == new_teacher
+
+    conn = init_db(e["path"])
+    user = conn.execute(
+        "SELECT status, password_hash FROM users WHERE id=?", (created["id"],)
+    ).fetchone()
+    link = conn.execute(
+        "SELECT user_id, institution_id FROM teacher_identity_links WHERE teacher_id=?",
+        (new_teacher,),
+    ).fetchone()
+    audit = conn.execute(
+        "SELECT actor_id, institution_id, action_type FROM audit_log WHERE entity_id=?",
+        (created["id"],),
+    ).fetchone()
+    assert user["status"] == "active"
+    assert user["password_hash"].startswith("scrypt:")
+    assert link["user_id"] == created["id"]
+    assert link["institution_id"] == e["tenant_a"]
+    assert audit["actor_id"] == e["admin_a"]["id"]
+    assert audit["institution_id"] == e["tenant_a"]
+    assert audit["action_type"] == "school_user_created"
+    assert identity.active_tenant_identity(
+        conn, user_id=created["id"], institution_id=e["tenant_a"]
+    )
+    conn.close()
+
+
+def test_institution_admin_cannot_provision_teacher_identity_for_another_tenant(teacher_env):
+    e = teacher_env
+    client = e["app"].app.test_client()
+    csrf = login(client, e["admin_a"])
+    email = "foreign-teacher-provision-" + uuid.uuid4().hex[:8] + "@school.example"
+    response = client.post(
+        "/api/school/teacher-identities",
+        json={
+            "email": email,
+            "password": "a unique teacher portal password",
+            "teacher_id": e["teacher_b"],
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert response.status_code == 404
+    assert response.get_json() == {"error": "teacher_identity_not_found"}
+
+    conn = init_db(e["path"])
+    assert conn.execute("SELECT COUNT(*) FROM users WHERE email=?", (email,)).fetchone()[0] == 0
+    assert conn.execute("SELECT user_id FROM teachers WHERE id=?", (e["teacher_b"],)).fetchone()["user_id"] == e["user_b"]["id"]
+    conn.close()
+
+
+@pytest.mark.parametrize("actor_key", ["principal_a", "hr_a", "coordinator_a", "examiner_a", "user_a"])
+def test_only_manage_users_institution_admin_can_provision_teacher_identity(teacher_env, actor_key):
+    e = teacher_env
+    client = e["app"].app.test_client()
+    csrf = login(client, e[actor_key])
+    response = client.post(
+        "/api/school/teacher-identities",
+        json={
+            "email": "denied-" + uuid.uuid4().hex[:8] + "@school.example",
+            "password": "a unique teacher portal password",
+            "teacher_id": e["teacher_a"],
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert response.status_code == 403
+    assert response.get_json() == {"error": "permission_denied"}
+
+
+def test_teacher_identity_provisioning_revalidates_manage_users_inside_write_transaction(
+    teacher_env, monkeypatch
+):
+    e = teacher_env
+    conn = init_db(e["path"])
+    new_teacher = core.create_teacher(
+        conn, None, e["tenant_a"], "RACE-" + uuid.uuid4().hex[:8]
+    )
+    conn.close()
+
+    client = e["app"].app.test_client()
+    csrf = login(client, e["admin_a"])
+    original = identity.institution_permissions
+
+    def revoked_after_middleware(conn, *, user_id, institution_id):
+        if conn.in_transaction:
+            return set()
+        return original(conn, user_id=user_id, institution_id=institution_id)
+
+    monkeypatch.setattr(identity, "institution_permissions", revoked_after_middleware)
+    email = "revoked-provision-" + uuid.uuid4().hex[:8] + "@school.example"
+    response = client.post(
+        "/api/school/teacher-identities",
+        json={
+            "email": email,
+            "password": "a unique teacher portal password",
+            "teacher_id": new_teacher,
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert response.status_code == 403
+    assert response.get_json() == {"error": "permission_denied"}
+
+    conn = init_db(e["path"])
+    assert conn.execute("SELECT COUNT(*) FROM users WHERE email=?", (email,)).fetchone()[0] == 0
+    assert conn.execute("SELECT user_id FROM teachers WHERE id=?", (new_teacher,)).fetchone()["user_id"] is None
+    conn.close()
+
+
+def test_teacher_identity_provisioning_rejects_client_selected_tenant_or_role(teacher_env):
+    e = teacher_env
+    client = e["app"].app.test_client()
+    csrf = login(client, e["admin_a"])
+    response = client.post(
+        "/api/school/teacher-identities",
+        json={
+            "email": "forged-provision-" + uuid.uuid4().hex[:8] + "@school.example",
+            "password": "a unique teacher portal password",
+            "teacher_id": e["teacher_a"],
+            "institution_id": e["tenant_b"],
+            "role_name": "Institution Admin",
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert response.status_code == 400
+    assert response.get_json() == {"error": "unsupported_payload"}
+
+
+def test_teacher_identity_provisioning_requires_csrf_and_rolls_back_on_audit_failure(teacher_env):
+    e = teacher_env
+    conn = init_db(e["path"])
+    new_teacher = core.create_teacher(
+        conn, None, e["tenant_a"], "AUDIT-" + uuid.uuid4().hex[:8]
+    )
+    conn.execute(
+        """
+        CREATE TRIGGER fail_tenant_teacher_identity_audit
+        BEFORE INSERT ON audit_log
+        WHEN NEW.action_type = 'school_user_created'
+        BEGIN
+            SELECT RAISE(ABORT, 'school_user_audit_unavailable');
+        END
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    client = e["app"].app.test_client()
+    csrf = login(client, e["admin_a"])
+    missing_csrf = client.post(
+        "/api/school/teacher-identities",
+        json={
+            "email": "missing-csrf-" + uuid.uuid4().hex[:8] + "@school.example",
+            "password": "a unique teacher portal password",
+            "teacher_id": new_teacher,
+        },
+    )
+    assert missing_csrf.status_code == 400
+
+    email = "audit-failure-" + uuid.uuid4().hex[:8] + "@school.example"
+    response = client.post(
+        "/api/school/teacher-identities",
+        json={
+            "email": email,
+            "password": "a unique teacher portal password",
+            "teacher_id": new_teacher,
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert response.status_code == 500
+    assert response.get_json() == {"error": "teacher_identity_provisioning_failed"}
+
+    conn = init_db(e["path"])
+    assert conn.execute("SELECT COUNT(*) FROM users WHERE email=?", (email,)).fetchone()[0] == 0
+    assert conn.execute("SELECT user_id FROM teachers WHERE id=?", (new_teacher,)).fetchone()["user_id"] is None
+    conn.close()
