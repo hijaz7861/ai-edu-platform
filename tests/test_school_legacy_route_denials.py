@@ -18,6 +18,7 @@ SCHOOL_API_ROUTE_METHODS = frozenset({
     ("school_teacher_leave_requests", "GET"),
     ("school_teacher_create_leave_request", "POST"),
     ("school_revoke_teacher_identity", "POST"),
+    ("school_create_teacher_identity", "POST"),
     ("school_classes", "GET"),
     ("school_create_class", "POST"),
     ("school_question_banks", "GET"),
