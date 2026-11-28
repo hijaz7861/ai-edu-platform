@@ -66,6 +66,54 @@ def test_platform_admin_session_cannot_call_tenant_identity_api(monkeypatch):
     assert response.get_json() == {"error": "school_identity_required"}
 
 
+def test_platform_admin_session_is_denied_from_every_registered_school_route_method(
+    monkeypatch,
+):
+    """A platform-admin cookie must never substitute for a tenant identity."""
+    import re
+
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("REQUIRE_API_AUTH", "1")
+    monkeypatch.setenv("API_RATE_LIMIT_ENABLED", "0")
+    app_module.app.config.update(TESTING=True)
+
+    client = app_module.app.test_client()
+    with client.session_transaction() as session:
+        session["user"] = "platform-admin"
+        session["role"] = "platform_admin"
+
+    checked = set()
+    for rule in app_module.app.url_map.iter_rules():
+        if not rule.rule.startswith("/api/school/"):
+            continue
+        path = re.sub(
+            r"<(?:(int|float|path|uuid|string):)?([^>]+)>",
+            lambda match: (
+                "1" if match.group(1) == "int"
+                else "1.0" if match.group(1) == "float"
+                else "00000000-0000-0000-0000-000000000001"
+                if match.group(1) == "uuid"
+                else "sample"
+            ),
+            rule.rule,
+        )
+        methods = set(rule.methods or ()) - {"HEAD", "OPTIONS"}
+        for method in methods:
+            response = client.open(
+                path,
+                method=method,
+                json={} if method in {"POST", "PUT", "PATCH", "DELETE"} else None,
+            )
+            assert response.status_code == 403, (
+                f"platform admin unexpectedly reached {method} {path}: "
+                f"{response.status_code} {response.get_json(silent=True)}"
+            )
+            assert response.get_json() == {"error": "school_identity_required"}
+            checked.add((rule.endpoint, method))
+
+    assert checked == set(app_module._SCHOOL_API_ROUTE_METHODS)
+
+
 def test_every_school_route_method_has_an_explicit_permission_rule():
     assert set(app_module._SCHOOL_ROUTE_PERMISSION_REQUIREMENTS) == set(
         app_module._SCHOOL_API_ROUTE_METHODS
