@@ -38,7 +38,39 @@ def tenant_read_env(tmp_path, monkeypatch):
         conn, "Read Snapshot Tenant", "RS-" + suffix
     )
     campus_id = core.create_campus(conn, institution_id, "Main", "RS-" + suffix)
-    core.create_class(conn, institution_id, campus_id, "Read Snapshot Class", "2026")
+    class_id = core.create_class(
+        conn, institution_id, campus_id, "Read Snapshot Class", "2026"
+    )
+    tenant_b_id = core.create_institution(
+        conn, "Read Snapshot Foreign Tenant", "RFT-" + suffix
+    )
+    campus_b_id = core.create_campus(
+        conn, tenant_b_id, "Foreign Campus", "RFT-" + suffix
+    )
+    class_b_id = core.create_class(
+        conn, tenant_b_id, campus_b_id, "Foreign Class", "2026"
+    )
+    question_bank_id = "read-bank-a-" + suffix
+    question_bank_b_id = "read-bank-b-" + suffix
+    blueprint_id = "read-blueprint-a-" + suffix
+    blueprint_b_id = "read-blueprint-b-" + suffix
+    conn.executemany(
+        """INSERT INTO question_banks (id, institution_id, name, status)
+           VALUES (?, ?, ?, 'active')""",
+        [
+            (question_bank_id, institution_id, "Tenant A Bank"),
+            (question_bank_b_id, tenant_b_id, "Tenant B Bank"),
+        ],
+    )
+    conn.executemany(
+        """INSERT INTO exam_blueprints
+           (id, institution_id, total_marks, duration_minutes, language, status)
+           VALUES (?, ?, 100, 60, 'en', 'draft')""",
+        [
+            (blueprint_id, institution_id),
+            (blueprint_b_id, tenant_b_id),
+        ],
+    )
     teacher_id = core.create_teacher(
         conn, None, institution_id, "RS-T-" + suffix
     )
@@ -74,6 +106,13 @@ def tenant_read_env(tmp_path, monkeypatch):
     return {
         "app": app_module,
         "institution_id": institution_id,
+        "tenant_b_id": tenant_b_id,
+        "class_id": class_id,
+        "class_b_id": class_b_id,
+        "question_bank_id": question_bank_id,
+        "question_bank_b_id": question_bank_b_id,
+        "blueprint_id": blueprint_id,
+        "blueprint_b_id": blueprint_b_id,
         "admin": admin,
         "teacher": teacher,
         "job_id": job_id,
@@ -92,6 +131,44 @@ def _session_client(env, actor):
         session["role"] = "school_user"
         session["csrf_token"] = "tenant-read-csrf"
     return client
+
+
+def test_paid_academic_reads_ignore_forged_tenant_selector_and_exclude_foreign_rows(
+    tenant_read_env,
+):
+    """Tenant selectors supplied by a client must never switch a school read."""
+    env = tenant_read_env
+    client = _session_client(env, env["admin"])
+    cases = (
+        (
+            "/api/school/classes",
+            "classes",
+            env["class_id"],
+            env["class_b_id"],
+        ),
+        (
+            "/api/school/question-banks",
+            "question_banks",
+            env["question_bank_id"],
+            env["question_bank_b_id"],
+        ),
+        (
+            "/api/school/exam-blueprints",
+            "exam_blueprints",
+            env["blueprint_id"],
+            env["blueprint_b_id"],
+        ),
+    )
+
+    for path, collection, own_id, foreign_id in cases:
+        response = client.get(
+            f"{path}?institution_id={env['tenant_b_id']}"
+        )
+        assert response.status_code == 200, response.get_json()
+        rows = response.get_json()[collection]
+        returned_ids = {row["id"] for row in rows}
+        assert own_id in returned_ids
+        assert foreign_id not in returned_ids
 
 
 @pytest.mark.parametrize(("actor_key", "path_template"), READ_ROUTES)
