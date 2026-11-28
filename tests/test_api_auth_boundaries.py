@@ -153,3 +153,29 @@ def test_every_registered_api_route_rejects_anonymous_access_in_production(clien
             f"got {response.status_code}"
         )
         assert response.get_json() == {"error": "authentication_required"}
+
+@pytest.mark.parametrize(
+    ("path", "role", "expected_status"),
+    [
+        ("/api/dashboard/stats", "platform_admin", 200),
+        ("/institutions/tenant-a/classes", "platform_admin", 200),
+        ("/api/school/not-registered", "school_user", 403),
+        ("/api/status", None, 200),
+    ],
+)
+def test_dynamic_application_responses_are_not_cacheable(
+    client, path, role, expected_status
+):
+    if role:
+        with client.session_transaction() as session:
+            session["user"] = "cache-policy-test"
+            session["role"] = role
+            if role == "school_user":
+                session["user_id"] = "school-user-id"
+                session["institution_id"] = "tenant-a"
+
+    response = client.get(path)
+    assert response.status_code == expected_status
+    assert "no-store" in response.headers.get("Cache-Control", "").lower()
+    assert response.headers.get("Pragma") == "no-cache"
+    assert response.headers.get("Expires") == "0"

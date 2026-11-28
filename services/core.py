@@ -102,6 +102,7 @@ DEFAULT_ROLES = [
     ("Parent", "class", ["view_child_records"]),
     ("Examiner", "institution", ["verify_questions", "publish_exam"]),
     ("HR/Attendance Officer", "institution", ["manage_attendance_policy", "approve_leave"]),
+    ("Teacher Portal", "institution", ["self_attendance", "self_leave_request", "view_own_records"]),
 ]
 
 
